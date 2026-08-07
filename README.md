@@ -15,27 +15,28 @@ built to be simple, testable, and easy to extend.
   assistant stops or the turn budget is exhausted.
 - **Tool system** — a `Tool` trait, a shared `ToolContext`, and a `Registry`.
   Every tool enforces the workspace boundary.
-- **Built-in tools**:
-  - `read_file` — read a text file inside the workspace
-  - `write_file` — write a text file inside the workspace
-  - `edit_file` — replace text inside a file
-  - `list_directory` — list a directory's entries
-  - `bash` — run a shell command with a bounded timeout
-  - `glob` — find files by glob pattern
-  - `grep` — search file contents by regex
-  - `web_fetch` — fetch a URL and return its text
-  - `ask_user` — ask the user a question
-- **Sub-agent orchestration** — run several prompts as independent sub-agents
-  in parallel, each with its own context, sharing the provider.
+- **15 built-in tools** — `read_file`, `write_file`, `edit_file`,
+  `list_directory`, `bash`, `glob`, `grep`, `web_fetch`, `ask_user`,
+  `apply_patch`, `search` (code index), `terminal`, `git_status`, `git_diff`,
+  `git_commit`.
+- **Orchestration** — parallel sub-agents, a DAG workflow engine with phases
+  and budget-aware fan-out, and a stall watchdog with bounded retries.
 - **Sessions & resume** — persist conversations to disk and resume them across
-  runs (`forge resume`, `forge sessions`).
+  runs.
 - **Permissions** — tools declare a safety level; a policy can allow/deny tools;
   prompt-level tools ask an approver before running.
 - **Context management** — a token budget and a compactor that folds old
   messages into a summary when the conversation grows too large.
-- **Interactive TUI** — a line-based chat REPL with approval prompts
-  (`forge chat`).
-- **Git integration** — `git_status`, `git_diff`, `git_commit` tools.
+- **Memory** — a durable cross-session fact store.
+- **Sandbox** — command isolation with a minimal environment.
+- **Interactive TUI** — a line-based chat REPL with approval prompts.
+- **Notifications** — completion alerts (macOS native).
+- **Hooks & plugins** — before/after tool hooks and a plugin bundle system.
+- **Cron/automations** — an interval-based job scheduler.
+- **Code/PR review** — heuristic diff review.
+- **MCP** — a minimal Model Context Protocol client over stdio.
+- **Browser automation** — CDP headless Chrome control.
+- **Computer/desktop use** — screenshot + coordinate control (macOS).
 - **Providers** — an OpenAI-compatible HTTP provider, plus a scriptable mock
   provider for tests and demos.
 - **Config** — a small JSON config file (`~/.config/forge/config.json`).

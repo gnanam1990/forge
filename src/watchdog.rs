@@ -31,7 +31,7 @@ impl Watchdog {
     {
         let f = Arc::new(f);
         let mut last_error: Option<Error> = None;
-        for attempt in 0..=self.max_retries {
+        for _attempt in 0..=self.max_retries {
             let f = Arc::clone(&f);
             let (tx, rx) = std::sync::mpsc::channel();
             let handle = std::thread::spawn(move || {

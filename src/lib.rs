@@ -10,6 +10,7 @@ pub mod cli;
 pub mod config;
 pub mod context;
 pub mod cron;
+pub mod desktop;
 pub mod error;
 pub mod hooks;
 pub mod mcp;

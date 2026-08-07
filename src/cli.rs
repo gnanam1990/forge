@@ -100,6 +100,13 @@ pub enum Command {
         /// The URL to open.
         url: String,
     },
+    /// Desktop control: `screenshot <path>`, `click <x> <y>`, `type <text>`.
+    Desktop {
+        /// Action: screenshot | click | type.
+        action: String,
+        /// Arguments for the action.
+        args: Vec<String>,
+    },
     /// Write a sample config file to the default location.
     Init,
 }
@@ -302,6 +309,39 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("opened {url} (target {target})");
             for tab in browser.list()? {
                 println!("tab: {tab}");
+            }
+            Ok(())
+        }
+        Command::Desktop { action, args } => {
+            let desktop = crate::desktop::Desktop::new();
+            match action.as_str() {
+                "screenshot" => {
+                    let path = args.first().ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("screenshot needs a path".into())
+                    })?;
+                    desktop.screenshot(std::path::Path::new(path))?;
+                    println!("screenshot saved to {path}");
+                }
+                "click" => {
+                    let x: i32 = args.first().and_then(|s| s.parse().ok()).ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("click needs x y".into())
+                    })?;
+                    let y: i32 = args.get(1).and_then(|s| s.parse().ok()).ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("click needs x y".into())
+                    })?;
+                    desktop.click(x, y)?;
+                    println!("clicked {x},{y}");
+                }
+                "type" => {
+                    let text = args.join(" ");
+                    desktop.type_text(&text)?;
+                    println!("typed");
+                }
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unknown desktop action {other}"
+                    )))
+                }
             }
             Ok(())
         }

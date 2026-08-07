@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// The result of a sandboxed command.
 #[derive(Debug, Clone)]

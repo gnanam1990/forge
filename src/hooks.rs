@@ -72,7 +72,6 @@ impl HookDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn hooks_run_in_order() {
