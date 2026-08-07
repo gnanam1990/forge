@@ -8,6 +8,7 @@ pub mod agent;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod cron;
 pub mod error;
 pub mod hooks;
 pub mod memory;

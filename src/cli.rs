@@ -76,6 +76,14 @@ pub enum Command {
         /// Value (for remember).
         value: Option<String>,
     },
+    /// Run scheduled jobs from a JSON file. With `--forever`, keep running.
+    Cron {
+        /// Path to a JSON file containing an array of jobs.
+        file: PathBuf,
+        /// Keep running on the jobs' intervals instead of once.
+        #[arg(long)]
+        forever: bool,
+    },
     /// Write a sample config file to the default location.
     Init,
 }
@@ -217,6 +225,24 @@ fn dispatch(cli: Cli) -> Result<()> {
                     return Err(crate::error::Error::InvalidArgs(format!(
                         "unknown action {other}"
                     )))
+                }
+            }
+            Ok(())
+        }
+        Command::Cron { file, forever } => {
+            let raw = std::fs::read_to_string(&file)?;
+            let jobs: Vec<crate::cron::Job> = serde_json::from_str(&raw).map_err(|e| {
+                crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
+            })?;
+            let mut scheduler = crate::cron::Scheduler::new();
+            for job in jobs {
+                scheduler.add(job);
+            }
+            if forever {
+                scheduler.run_forever()?;
+            } else {
+                for (name, output) in scheduler.run_once()? {
+                    println!("=== {name} ===\n{output}");
                 }
             }
             Ok(())
