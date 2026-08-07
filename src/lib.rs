@@ -9,6 +9,7 @@ pub mod cli;
 pub mod config;
 pub mod context;
 pub mod error;
+pub mod memory;
 pub mod permission;
 pub mod session;
 pub mod tools;

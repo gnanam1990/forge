@@ -63,6 +63,16 @@ pub enum Command {
     Sessions,
     /// Start an interactive chat session.
     Chat,
+    /// Manage cross-session memory: `remember <key> <value>`, `recall <key>`,
+    /// `list`.
+    Memory {
+        /// Subcommand: remember | recall | list.
+        action: String,
+        /// Key (for remember/recall).
+        key: Option<String>,
+        /// Value (for remember).
+        value: Option<String>,
+    },
     /// Write a sample config file to the default location.
     Init,
 }
@@ -160,6 +170,40 @@ fn dispatch(cli: Cli) -> Result<()> {
         Command::Chat => {
             let config = Config::load()?;
             crate::tui::run_chat(&config)
+        }
+        Command::Memory { action, key, value } => {
+            let path = crate::memory::default_memory_path()?;
+            let mut memory = crate::memory::Memory::load(path.clone())?;
+            match action.as_str() {
+                "remember" => {
+                    let key =
+                        key.ok_or_else(|| crate::error::Error::InvalidArgs("key required".into()))?;
+                    let value = value
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("value required".into()))?;
+                    memory.remember(key, value);
+                    memory.save()?;
+                    println!("remembered");
+                }
+                "recall" => {
+                    let key =
+                        key.ok_or_else(|| crate::error::Error::InvalidArgs("key required".into()))?;
+                    match memory.recall(&key) {
+                        Some(v) => println!("{v}"),
+                        None => println!("(not found)"),
+                    }
+                }
+                "list" => {
+                    for (k, v) in memory.all() {
+                        println!("{k}: {v}");
+                    }
+                }
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unknown action {other}"
+                    )))
+                }
+            }
+            Ok(())
         }
         Command::Init => {
             let path = crate::config::config_path()?;
