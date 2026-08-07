@@ -5,6 +5,7 @@
 //! configuration so the whole thing is testable without a network or a model.
 
 pub mod agent;
+pub mod browser;
 pub mod cli;
 pub mod config;
 pub mod context;

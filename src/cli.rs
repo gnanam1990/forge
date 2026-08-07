@@ -95,6 +95,11 @@ pub enum Command {
         /// JSON arguments for the tool.
         args: String,
     },
+    /// Launch a headless browser and open a URL.
+    Browser {
+        /// The URL to open.
+        url: String,
+    },
     /// Write a sample config file to the default location.
     Init,
 }
@@ -289,6 +294,15 @@ fn dispatch(cli: Cli) -> Result<()> {
                 .map_err(|e| crate::error::Error::InvalidArgs(format!("bad args: {e}")))?;
             let output = client.call_tool(&tool, args)?;
             println!("{output}");
+            Ok(())
+        }
+        Command::Browser { url } => {
+            let browser = crate::browser::Browser::launch()?;
+            let target = browser.open(&url)?;
+            println!("opened {url} (target {target})");
+            for tab in browser.list()? {
+                println!("tab: {tab}");
+            }
             Ok(())
         }
         Command::Init => {
