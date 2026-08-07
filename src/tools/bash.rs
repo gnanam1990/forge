@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::{string_arg, Tool, ToolContext, ToolResult};
 use crate::error::Result;
+use crate::permission::Permission;
 
 /// Default timeout for a shell command, in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -26,6 +27,10 @@ impl Tool for BashTool {
 
     fn description(&self) -> &str {
         "Run a shell command. Args: {\"command\": string, \"timeout_secs\": number (optional)}."
+    }
+
+    fn permission(&self) -> Permission {
+        Permission::Prompt
     }
 
     fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {

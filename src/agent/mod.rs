@@ -5,14 +5,18 @@
 pub mod http;
 pub mod mock;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::context::ContextManager;
 use crate::error::{Error, Result};
+use crate::permission::{Approver, Permission, Policy};
 use crate::tools::{Registry, ToolContext};
 
 /// A tool call requested by the assistant.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -20,7 +24,7 @@ pub struct ToolCall {
 }
 
 /// A message in the conversation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     System(String),
     User(String),
@@ -56,11 +60,16 @@ pub struct AgentOutcome {
     pub tool_calls: usize,
 }
 
-/// The agent: a provider plus a tool registry, driven by a turn budget.
+/// The agent: a provider plus a tool registry, driven by a turn budget, with a
+/// permission policy and an optional approver.
 pub struct Agent {
     provider: Arc<dyn Provider>,
     registry: Registry,
     max_turns: usize,
+    policy: Policy,
+    approver: Option<Box<Approver>>,
+    context: ContextManager,
+    workspace_root: PathBuf,
 }
 
 impl Agent {
@@ -69,7 +78,36 @@ impl Agent {
             provider: Arc::from(provider),
             registry,
             max_turns,
+            policy: Policy::new(),
+            approver: None,
+            context: ContextManager::new(100_000),
+            workspace_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
+    }
+
+    /// Set the permission policy.
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Set an approver for prompt-level tools. Without one, prompt-level tools
+    /// are denied in headless runs.
+    pub fn with_approver(mut self, approver: Box<Approver>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+
+    /// Set the context manager (token budget + compaction).
+    pub fn with_context(mut self, context: ContextManager) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Set the workspace root tools operate inside.
+    pub fn with_workspace(mut self, root: impl Into<PathBuf>) -> Self {
+        self.workspace_root = root.into();
+        self
     }
 
     /// Build the system prompt that tells the model which tools are available.
@@ -90,15 +128,24 @@ impl Agent {
     /// Run the agent on a user prompt until it stops calling tools or the turn
     /// budget is exhausted.
     pub fn run(&self, prompt: &str) -> Result<AgentOutcome> {
-        let mut messages = vec![
-            Message::System(self.system_prompt()),
-            Message::User(prompt.to_string()),
-        ];
+        let mut messages = vec![Message::System(self.system_prompt())];
+        self.run_into(&mut messages, prompt)
+    }
+
+    /// Run the agent on a prompt, appending to an existing message list. This is
+    /// the resume path: pass a session's messages and the conversation continues.
+    pub fn run_into(&self, messages: &mut Vec<Message>, prompt: &str) -> Result<AgentOutcome> {
+        messages.push(Message::User(prompt.to_string()));
         let mut tool_calls = 0usize;
 
         for turn in 0..self.max_turns {
-            let assistant = self.provider.complete(&messages)?;
+            self.context.compact(messages);
+            let assistant = self.provider.complete(messages)?;
             if assistant.tool_calls.is_empty() {
+                messages.push(Message::Assistant {
+                    content: assistant.content.clone(),
+                    tool_calls: vec![],
+                });
                 return Ok(AgentOutcome {
                     final_text: assistant.content,
                     turns: turn + 1,
@@ -111,16 +158,10 @@ impl Agent {
                 tool_calls: assistant.tool_calls.clone(),
             });
 
-            let ctx = ToolContext::new(std::env::current_dir().unwrap_or_default());
+            let ctx = ToolContext::new(self.workspace_root.clone());
             for call in &assistant.tool_calls {
                 tool_calls += 1;
-                let output = match self.registry.get(&call.name) {
-                    Some(tool) => match tool.run(&call.arguments, &ctx) {
-                        Ok(result) => result.output,
-                        Err(e) => format!("tool error: {e}"),
-                    },
-                    None => format!("unknown tool: {}", call.name),
-                };
+                let output = self.execute_tool(call, &ctx);
                 messages.push(Message::Tool {
                     tool_call_id: call.id.clone(),
                     name: call.name.clone(),
@@ -135,21 +176,66 @@ impl Agent {
         )))
     }
 
+    /// Execute a single tool call, applying the permission policy and the
+    /// approver. Returns the text fed back to the model.
+    fn execute_tool(&self, call: &ToolCall, ctx: &ToolContext) -> String {
+        let Some(tool) = self.registry.get(&call.name) else {
+            return format!("unknown tool: {}", call.name);
+        };
+        let effective = self.policy.decide(&call.name, tool.permission());
+        match effective {
+            Permission::Deny => format!("permission denied: {}", call.name),
+            Permission::Prompt => {
+                let approved = self
+                    .approver
+                    .as_ref()
+                    .map(|a| a(&call.name))
+                    .unwrap_or(false);
+                if approved {
+                    self.run_tool(tool, call, ctx)
+                } else {
+                    format!("permission denied: {}", call.name)
+                }
+            }
+            Permission::Allow => self.run_tool(tool, call, ctx),
+        }
+    }
+
+    fn run_tool(
+        &self,
+        tool: &dyn crate::tools::Tool,
+        call: &ToolCall,
+        ctx: &ToolContext,
+    ) -> String {
+        match tool.run(&call.arguments, ctx) {
+            Ok(result) => result.output,
+            Err(e) => format!("tool error: {e}"),
+        }
+    }
+
     /// Run several prompts as independent sub-agents in parallel, each with its
     /// own fresh context and tool registry, sharing this agent's provider. The
     /// results are returned in the same order as the prompts.
     pub fn run_parallel(&self, prompts: &[String]) -> Result<Vec<String>> {
+        let policy = self.policy.clone();
         let handles: Vec<_> = prompts
             .iter()
             .map(|prompt| {
                 let provider = Arc::clone(&self.provider);
                 let prompt = prompt.clone();
                 let max_turns = self.max_turns;
+                let policy = policy.clone();
+                let context = self.context.clone();
+                let workspace_root = self.workspace_root.clone();
                 std::thread::spawn(move || {
                     let sub = Agent {
                         provider,
                         registry: Registry::builtin(),
                         max_turns,
+                        policy,
+                        approver: None,
+                        context,
+                        workspace_root,
                     };
                     sub.run(&prompt).map(|outcome| outcome.final_text)
                 })

@@ -23,12 +23,12 @@ fn agent_answers_without_tools() {
 fn agent_executes_a_tool_call() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "forge content").unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
 
     let agent = agent_with(vec![
         ScriptTurn::Tools(vec![read_call("call_1", "a.txt")]),
         ScriptTurn::Answer("read it".into()),
-    ]);
+    ])
+    .with_workspace(dir.path());
     let outcome = agent.run("read a.txt").unwrap();
     assert_eq!(outcome.tool_calls, 1);
     assert_eq!(outcome.final_text, "read it");
@@ -221,4 +221,105 @@ fn run_parallel_returns_results_in_order() {
     // threads, so completion order is not deterministic — compare as a set.
     results.sort();
     assert_eq!(results, vec!["one", "three", "two"]);
+}
+
+#[test]
+fn run_into_resumes_a_conversation() {
+    use forge::agent::mock::ScriptTurn;
+    let agent = Agent::new(
+        Box::new(MockProvider::new(vec![
+            ScriptTurn::Answer("first".into()),
+            ScriptTurn::Answer("second".into()),
+        ])),
+        Registry::builtin(),
+        5,
+    );
+    let mut messages = vec![forge::agent::Message::System("sys".into())];
+    let first = agent.run_into(&mut messages, "q1").unwrap();
+    assert_eq!(first.final_text, "first");
+    assert_eq!(messages.len(), 3); // system + user + assistant
+    let second = agent.run_into(&mut messages, "q2").unwrap();
+    assert_eq!(second.final_text, "second");
+    assert_eq!(messages.len(), 5); // grew by user + assistant
+}
+
+#[test]
+fn policy_denies_a_tool() {
+    use forge::agent::mock::ScriptTurn;
+    use forge::permission::Policy;
+    let agent = Agent::new(
+        Box::new(MockProvider::new(vec![
+            ScriptTurn::Tools(vec![call("c1", "bash", json!({"command": "echo hi"}))]),
+            ScriptTurn::Answer("done".into()),
+        ])),
+        Registry::builtin(),
+        5,
+    )
+    .with_policy(Policy::new().deny("bash"));
+    let outcome = agent.run("go").unwrap();
+    assert_eq!(outcome.tool_calls, 1);
+    // The denied tool must not have run; the model still got a tool result.
+    assert_eq!(outcome.final_text, "done");
+}
+
+#[test]
+fn prompt_tool_denied_without_approver() {
+    use forge::agent::mock::ScriptTurn;
+    let agent = Agent::new(
+        Box::new(MockProvider::new(vec![
+            ScriptTurn::Tools(vec![call(
+                "c1",
+                "write_file",
+                json!({"path": "x", "content": "y"}),
+            )]),
+            ScriptTurn::Answer("done".into()),
+        ])),
+        Registry::builtin(),
+        5,
+    );
+    let outcome = agent.run("go").unwrap();
+    assert_eq!(outcome.tool_calls, 1);
+    assert_eq!(outcome.final_text, "done");
+}
+
+#[test]
+fn approver_allows_a_prompt_tool() {
+    use forge::agent::mock::ScriptTurn;
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Agent::new(
+        Box::new(MockProvider::new(vec![
+            ScriptTurn::Tools(vec![call(
+                "c1",
+                "write_file",
+                json!({"path": "x.txt", "content": "hi"}),
+            )]),
+            ScriptTurn::Answer("done".into()),
+        ])),
+        Registry::builtin(),
+        5,
+    )
+    .with_workspace(dir.path())
+    .with_approver(Box::new(|_| true));
+    let outcome = agent.run("go").unwrap();
+    assert_eq!(outcome.tool_calls, 1);
+    assert!(dir.path().join("x.txt").exists());
+}
+
+#[test]
+fn git_status_reports_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    // Initialize a git repo.
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+    let ctx = ToolContext::new(dir.path().to_path_buf());
+    let registry = Registry::builtin();
+    let status = registry.get("git_status").unwrap();
+    let res = status.run(&json!({}), &ctx).unwrap();
+    assert!(res.ok);
+    assert!(res.output.contains("a.txt"));
 }

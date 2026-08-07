@@ -27,6 +27,15 @@ built to be simple, testable, and easy to extend.
   - `ask_user` — ask the user a question
 - **Sub-agent orchestration** — run several prompts as independent sub-agents
   in parallel, each with its own context, sharing the provider.
+- **Sessions & resume** — persist conversations to disk and resume them across
+  runs (`forge resume`, `forge sessions`).
+- **Permissions** — tools declare a safety level; a policy can allow/deny tools;
+  prompt-level tools ask an approver before running.
+- **Context management** — a token budget and a compactor that folds old
+  messages into a summary when the conversation grows too large.
+- **Interactive TUI** — a line-based chat REPL with approval prompts
+  (`forge chat`).
+- **Git integration** — `git_status`, `git_diff`, `git_commit` tools.
 - **Providers** — an OpenAI-compatible HTTP provider, plus a scriptable mock
   provider for tests and demos.
 - **Config** — a small JSON config file (`~/.config/forge/config.json`).
@@ -51,6 +60,15 @@ forge run "summarize this project"
 
 # Run several prompts as parallel sub-agents (file is a JSON array of strings)
 forge orchestrate prompts.json
+
+# Start an interactive chat session
+forge chat
+
+# Resume a saved session
+forge resume <session-id> "continue the work"
+
+# List saved sessions
+forge sessions
 ```
 
 ### Configuration

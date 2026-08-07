@@ -1,0 +1,103 @@
+//! Sessions: persist and resume conversations.
+//!
+//! A session is a named, durable list of messages. The agent can resume a
+//! session by continuing to append to its message list, so a long conversation
+//! survives across runs.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::agent::Message;
+use crate::error::{Error, Result};
+
+/// A named, durable conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub id: String,
+    pub messages: Vec<Message>,
+}
+
+impl Session {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            messages: Vec::new(),
+        }
+    }
+
+    /// Save the session to `dir/<id>.json`.
+    pub fn save(&self, dir: &Path) -> Result<()> {
+        fs::create_dir_all(dir)?;
+        let path = dir.join(format!("{}.json", self.id));
+        let raw = serde_json::to_string_pretty(self)?;
+        fs::write(path, raw)?;
+        Ok(())
+    }
+
+    /// Load a session by id from `dir`.
+    pub fn load(dir: &Path, id: &str) -> Result<Session> {
+        let path = dir.join(format!("{id}.json"));
+        let raw = fs::read_to_string(&path)
+            .map_err(|e| Error::Config(format!("read session {id}: {e}")))?;
+        serde_json::from_str(&raw).map_err(|e| Error::Config(format!("parse session {id}: {e}")))
+    }
+
+    /// List the ids of all saved sessions in `dir`.
+    pub fn list(dir: &Path) -> Result<Vec<String>> {
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.path().extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                    ids.push(stem.to_string());
+                }
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+}
+
+/// The default sessions directory: `~/.local/share/forge/sessions`.
+pub fn default_sessions_dir() -> Result<PathBuf> {
+    let home = std::env::var("HOME").map_err(|_| Error::Config("HOME is not set".into()))?;
+    Ok(PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("forge")
+        .join("sessions"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Message;
+
+    #[test]
+    fn session_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new("abc");
+        session.messages.push(Message::User("hello".into()));
+        session.messages.push(Message::Assistant {
+            content: "hi".into(),
+            tool_calls: vec![],
+        });
+        session.save(dir.path()).unwrap();
+
+        let loaded = Session::load(dir.path(), "abc").unwrap();
+        assert_eq!(loaded.id, "abc");
+        assert_eq!(loaded.messages.len(), 2);
+        assert_eq!(Session::list(dir.path()).unwrap(), vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn list_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Session::list(dir.path()).unwrap(), Vec::<String>::new());
+    }
+}

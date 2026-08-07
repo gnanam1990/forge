@@ -5,6 +5,7 @@
 pub mod ask_user;
 pub mod bash;
 pub mod edit_file;
+pub mod git;
 pub mod glob;
 pub mod grep;
 pub mod list_directory;
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::permission::Permission;
 
 /// Per-call context handed to every tool. Carries the workspace root the tool
 /// must stay inside.
@@ -66,6 +68,12 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult>;
+
+    /// The safety level this tool declares. Read-only tools default to `Allow`;
+    /// mutating or network tools override to `Prompt`.
+    fn permission(&self) -> Permission {
+        Permission::Allow
+    }
 }
 
 /// A registry of tools, looked up by name.
@@ -112,6 +120,9 @@ impl Registry {
         registry.register(Box::new(grep::GrepTool::new()));
         registry.register(Box::new(web_fetch::WebFetchTool::new()));
         registry.register(Box::new(ask_user::AskUserTool::new()));
+        registry.register(Box::new(git::GitStatusTool::new()));
+        registry.register(Box::new(git::GitDiffTool::new()));
+        registry.register(Box::new(git::GitCommitTool::new()));
         registry
     }
 }

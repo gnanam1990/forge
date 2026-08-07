@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use super::{resolve_in_workspace, string_arg, Tool, ToolContext, ToolResult};
 use crate::error::Result;
+use crate::permission::Permission;
 
 #[derive(Default)]
 pub struct WriteFileTool;
@@ -24,6 +25,10 @@ impl Tool for WriteFileTool {
 
     fn description(&self) -> &str {
         "Write a text file inside the workspace, creating parent directories. Args: {\"path\": string, \"content\": string}."
+    }
+
+    fn permission(&self) -> Permission {
+        Permission::Prompt
     }
 
     fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {

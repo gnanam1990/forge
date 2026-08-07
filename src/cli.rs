@@ -41,6 +41,20 @@ pub enum Command {
         #[arg(long)]
         max_turns: Option<usize>,
     },
+    /// Resume a saved session with a new prompt.
+    Resume {
+        /// The session id to resume.
+        session: String,
+        /// The new prompt.
+        prompt: String,
+        /// Override the max number of turns.
+        #[arg(long)]
+        max_turns: Option<usize>,
+    },
+    /// List saved sessions.
+    Sessions,
+    /// Start an interactive chat session.
+    Chat,
     /// Write a sample config file to the default location.
     Init,
 }
@@ -83,6 +97,42 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Resume {
+            session,
+            prompt,
+            max_turns,
+        } => {
+            let config = Config::load()?;
+            let turns = max_turns.or(config.max_turns).unwrap_or(10);
+            let provider = HttpProvider::new(&config.provider)?;
+            let dir = crate::session::default_sessions_dir()?;
+            let mut session = crate::session::Session::load(&dir, &session)?;
+            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let outcome = agent.run_into(&mut session.messages, &prompt)?;
+            session.save(&dir)?;
+            println!("{}", outcome.final_text);
+            eprintln!(
+                "[forge] {} turn(s), {} tool call(s)",
+                outcome.turns, outcome.tool_calls
+            );
+            Ok(())
+        }
+        Command::Sessions => {
+            let dir = crate::session::default_sessions_dir()?;
+            let ids = crate::session::Session::list(&dir)?;
+            if ids.is_empty() {
+                println!("no saved sessions");
+            } else {
+                for id in ids {
+                    println!("{id}");
+                }
+            }
+            Ok(())
+        }
+        Command::Chat => {
+            let config = Config::load()?;
+            crate::tui::run_chat(&config)
+        }
         Command::Init => {
             let path = crate::config::config_path()?;
             if let Some(parent) = path.parent() {
@@ -115,10 +165,20 @@ fn dispatch(cli: Cli) -> Result<()> {
             let provider = HttpProvider::new(&config.provider)?;
             let registry = Registry::builtin();
             let agent = Agent::new(Box::new(provider), registry, turns);
-            let outcome = agent.run(&prompt)?;
+            let dir = crate::session::default_sessions_dir()?;
+            let id = format!(
+                "sess-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            );
+            let mut session = crate::session::Session::new(&id);
+            let outcome = agent.run_into(&mut session.messages, &prompt)?;
+            session.save(&dir)?;
             println!("{}", outcome.final_text);
             eprintln!(
-                "[forge] {} turn(s), {} tool call(s)",
+                "[forge] {} turn(s), {} tool call(s), session {id}",
                 outcome.turns, outcome.tool_calls
             );
             Ok(())

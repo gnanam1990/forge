@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::{resolve_in_workspace, string_arg, Tool, ToolContext, ToolResult};
 use crate::error::Result;
+use crate::permission::Permission;
 
 #[derive(Default)]
 pub struct EditFileTool;
@@ -23,6 +24,10 @@ impl Tool for EditFileTool {
 
     fn description(&self) -> &str {
         "Replace the first occurrence of `old` with `new` in a file. Args: {\"path\": string, \"old\": string, \"new\": string}."
+    }
+
+    fn permission(&self) -> Permission {
+        Permission::Prompt
     }
 
     fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {

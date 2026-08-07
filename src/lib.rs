@@ -7,7 +7,11 @@
 pub mod agent;
 pub mod cli;
 pub mod config;
+pub mod context;
 pub mod error;
+pub mod permission;
+pub mod session;
 pub mod tools;
+pub mod tui;
 
 pub use error::{Error, Result};

@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use super::{string_arg, Tool, ToolContext, ToolResult};
 use crate::error::Result;
+use crate::permission::Permission;
 
 /// Cap on how much fetched text is returned.
 const MAX_BYTES: usize = 64 * 1024;
@@ -24,6 +25,10 @@ impl Tool for WebFetchTool {
 
     fn description(&self) -> &str {
         "Fetch a URL and return its text content. Args: {\"url\": string}."
+    }
+
+    fn permission(&self) -> Permission {
+        Permission::Prompt
     }
 
     fn run(&self, args: &Value, _ctx: &ToolContext) -> Result<ToolResult> {
