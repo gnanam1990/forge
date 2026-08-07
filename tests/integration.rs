@@ -323,3 +323,74 @@ fn git_status_reports_changes() {
     assert!(res.ok);
     assert!(res.output.contains("a.txt"));
 }
+
+#[test]
+fn workflow_validates_and_runs_dag() {
+    use forge::agent::mock::ScriptTurn;
+    use forge::workflow::{Task, Workflow, WorkflowRunner};
+    let agent = Agent::new(
+        Box::new(MockProvider::new(vec![
+            ScriptTurn::Answer("a".into()),
+            ScriptTurn::Answer("b".into()),
+            ScriptTurn::Answer("c".into()),
+        ])),
+        Registry::builtin(),
+        5,
+    );
+    let workflow = Workflow {
+        name: "test".into(),
+        max_workers: 2,
+        max_tokens: 100_000,
+        tasks: vec![
+            Task {
+                id: "a".into(),
+                prompt: "do a".into(),
+                depends_on: vec![],
+                phase: None,
+            },
+            Task {
+                id: "b".into(),
+                prompt: "do b".into(),
+                depends_on: vec!["a".into()],
+                phase: None,
+            },
+            Task {
+                id: "c".into(),
+                prompt: "do c".into(),
+                depends_on: vec!["a".into()],
+                phase: None,
+            },
+        ],
+    };
+    let runner = WorkflowRunner::new(agent);
+    let outcome = runner.run(&workflow).unwrap();
+    assert_eq!(outcome.tasks_run, 3);
+    assert!(outcome.results.contains_key("a"));
+    assert!(outcome.results.contains_key("b"));
+    assert!(outcome.results.contains_key("c"));
+}
+
+#[test]
+fn workflow_rejects_cycle() {
+    use forge::workflow::{Task, Workflow};
+    let workflow = Workflow {
+        name: "cycle".into(),
+        max_workers: 2,
+        max_tokens: 100_000,
+        tasks: vec![
+            Task {
+                id: "a".into(),
+                prompt: "a".into(),
+                depends_on: vec!["b".into()],
+                phase: None,
+            },
+            Task {
+                id: "b".into(),
+                prompt: "b".into(),
+                depends_on: vec!["a".into()],
+                phase: None,
+            },
+        ],
+    };
+    assert!(workflow.validate().is_err());
+}

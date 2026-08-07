@@ -41,6 +41,14 @@ pub enum Command {
         #[arg(long)]
         max_turns: Option<usize>,
     },
+    /// Run a workflow from a JSON file (a DAG of tasks).
+    Workflow {
+        /// Path to a JSON workflow file.
+        file: PathBuf,
+        /// Override the max number of turns per task.
+        #[arg(long)]
+        max_turns: Option<usize>,
+    },
     /// Resume a saved session with a new prompt.
     Resume {
         /// The session id to resume.
@@ -95,6 +103,26 @@ fn dispatch(cli: Cli) -> Result<()> {
                 println!("=== sub-agent {} ===", i + 1);
                 println!("{result}");
             }
+            Ok(())
+        }
+        Command::Workflow { file, max_turns } => {
+            let config = Config::load()?;
+            let turns = max_turns.or(config.max_turns).unwrap_or(10);
+            let provider = HttpProvider::new(&config.provider)?;
+            let raw = std::fs::read_to_string(&file)?;
+            let workflow: crate::workflow::Workflow = serde_json::from_str(&raw).map_err(|e| {
+                crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
+            })?;
+            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let runner = crate::workflow::WorkflowRunner::new(agent);
+            let outcome = runner.run(&workflow)?;
+            for (id, text) in &outcome.results {
+                println!("=== {id} ===\n{text}");
+            }
+            eprintln!(
+                "[forge] {} task(s), {} tokens",
+                outcome.tasks_run, outcome.tokens_used
+            );
             Ok(())
         }
         Command::Resume {

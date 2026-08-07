@@ -213,6 +213,21 @@ impl Agent {
         }
     }
 
+    /// Run a single prompt as an independent sub-agent sharing this agent's
+    /// provider, returning the final text. Used by orchestration.
+    pub fn run_prompt(&self, prompt: &str) -> Result<String> {
+        let sub = Agent {
+            provider: Arc::clone(&self.provider),
+            registry: Registry::builtin(),
+            max_turns: self.max_turns,
+            policy: self.policy.clone(),
+            approver: None,
+            context: self.context.clone(),
+            workspace_root: self.workspace_root.clone(),
+        };
+        sub.run(prompt).map(|outcome| outcome.final_text)
+    }
+
     /// Run several prompts as independent sub-agents in parallel, each with its
     /// own fresh context and tool registry, sharing this agent's provider. The
     /// results are returned in the same order as the prompts.
