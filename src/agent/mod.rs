@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::context::ContextManager;
 use crate::error::{Error, Result};
+use crate::hooks::{HookContext, HookDispatcher};
 use crate::permission::{Approver, Permission, Policy};
 use crate::tools::{Registry, ToolContext};
 
@@ -70,6 +71,7 @@ pub struct Agent {
     approver: Option<Box<Approver>>,
     context: ContextManager,
     workspace_root: PathBuf,
+    hooks: HookDispatcher,
 }
 
 impl Agent {
@@ -82,6 +84,7 @@ impl Agent {
             approver: None,
             context: ContextManager::new(100_000),
             workspace_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            hooks: HookDispatcher::new(),
         }
     }
 
@@ -107,6 +110,12 @@ impl Agent {
     /// Set the workspace root tools operate inside.
     pub fn with_workspace(mut self, root: impl Into<PathBuf>) -> Self {
         self.workspace_root = root.into();
+        self
+    }
+
+    /// Set the hook dispatcher.
+    pub fn with_hooks(mut self, hooks: HookDispatcher) -> Self {
+        self.hooks = hooks;
         self
     }
 
@@ -183,7 +192,14 @@ impl Agent {
             return format!("unknown tool: {}", call.name);
         };
         let effective = self.policy.decide(&call.name, tool.permission());
-        match effective {
+        let hook_ctx = HookContext {
+            tool: call.name.clone(),
+            args: call.arguments.clone(),
+        };
+        if let Err(e) = self.hooks.run_before(&hook_ctx) {
+            return format!("blocked by hook: {e}");
+        }
+        let output = match effective {
             Permission::Deny => format!("permission denied: {}", call.name),
             Permission::Prompt => {
                 let approved = self
@@ -198,7 +214,9 @@ impl Agent {
                 }
             }
             Permission::Allow => self.run_tool(tool, call, ctx),
-        }
+        };
+        self.hooks.run_after(&hook_ctx);
+        output
     }
 
     fn run_tool(
@@ -224,6 +242,7 @@ impl Agent {
             approver: None,
             context: self.context.clone(),
             workspace_root: self.workspace_root.clone(),
+            hooks: HookDispatcher::new(),
         };
         sub.run(prompt).map(|outcome| outcome.final_text)
     }
@@ -251,6 +270,7 @@ impl Agent {
                         approver: None,
                         context,
                         workspace_root,
+                        hooks: HookDispatcher::new(),
                     };
                     sub.run(&prompt).map(|outcome| outcome.final_text)
                 })
