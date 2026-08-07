@@ -11,6 +11,7 @@ pub mod context;
 pub mod error;
 pub mod memory;
 pub mod permission;
+pub mod sandbox;
 pub mod session;
 pub mod tools;
 pub mod tui;
