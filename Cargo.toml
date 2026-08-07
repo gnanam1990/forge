@@ -1,0 +1,33 @@
+[package]
+name = "forge"
+version = "0.1.0"
+edition = "2021"
+description = "forge — an original, self-contained coding agent written in Rust"
+license = "MIT"
+repository = "https://github.com/yourname/forge"
+readme = "README.md"
+
+[lib]
+name = "forge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"], default-features = false }
+walkdir = "2"
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true
