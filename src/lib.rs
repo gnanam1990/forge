@@ -15,6 +15,7 @@ pub mod memory;
 pub mod notify;
 pub mod permission;
 pub mod plugin;
+pub mod review;
 pub mod sandbox;
 pub mod session;
 pub mod tools;

@@ -84,6 +84,8 @@ pub enum Command {
         #[arg(long)]
         forever: bool,
     },
+    /// Review the current git diff for common issues.
+    Review,
     /// Write a sample config file to the default location.
     Init,
 }
@@ -243,6 +245,29 @@ fn dispatch(cli: Cli) -> Result<()> {
             } else {
                 for (name, output) in scheduler.run_once()? {
                     println!("=== {name} ===\n{output}");
+                }
+            }
+            Ok(())
+        }
+        Command::Review => {
+            let workspace = Config::load()?.workspace_root();
+            let diff = std::process::Command::new("git")
+                .args(["diff"])
+                .current_dir(&workspace)
+                .output()
+                .map_err(|e| crate::error::Error::Agent(format!("git diff: {e}")))?;
+            let diff_text = String::from_utf8_lossy(&diff.stdout).into_owned();
+            let review = crate::review::review_diff(&diff_text);
+            if review.is_clean() {
+                println!("no issues found");
+            } else {
+                for finding in &review.findings {
+                    let tag = match finding.severity {
+                        crate::review::Severity::Error => "ERROR",
+                        crate::review::Severity::Warning => "WARN",
+                        crate::review::Severity::Info => "INFO",
+                    };
+                    println!("[{tag}] {}", finding.message);
                 }
             }
             Ok(())
