@@ -86,6 +86,15 @@ pub enum Command {
     },
     /// Review the current git diff for common issues.
     Review,
+    /// Connect to an MCP server and call a tool: `mcp <server> <tool> <json-args>`.
+    Mcp {
+        /// The MCP server command to spawn.
+        server: String,
+        /// The tool to call.
+        tool: String,
+        /// JSON arguments for the tool.
+        args: String,
+    },
     /// Write a sample config file to the default location.
     Init,
 }
@@ -270,6 +279,16 @@ fn dispatch(cli: Cli) -> Result<()> {
                     println!("[{tag}] {}", finding.message);
                 }
             }
+            Ok(())
+        }
+        Command::Mcp { server, tool, args } => {
+            let mut client = crate::mcp::McpClient::connect(&server, &[])?;
+            let tools = client.list_tools()?;
+            eprintln!("[forge] MCP tools: {}", tools.join(", "));
+            let args: serde_json::Value = serde_json::from_str(&args)
+                .map_err(|e| crate::error::Error::InvalidArgs(format!("bad args: {e}")))?;
+            let output = client.call_tool(&tool, args)?;
+            println!("{output}");
             Ok(())
         }
         Command::Init => {

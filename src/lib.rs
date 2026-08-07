@@ -11,6 +11,7 @@ pub mod context;
 pub mod cron;
 pub mod error;
 pub mod hooks;
+pub mod mcp;
 pub mod memory;
 pub mod notify;
 pub mod permission;
