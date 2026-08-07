@@ -18,9 +18,15 @@ built to be simple, testable, and easy to extend.
 - **Built-in tools**:
   - `read_file` — read a text file inside the workspace
   - `write_file` — write a text file inside the workspace
+  - `edit_file` — replace text inside a file
+  - `list_directory` — list a directory's entries
   - `bash` — run a shell command with a bounded timeout
   - `glob` — find files by glob pattern
   - `grep` — search file contents by regex
+  - `web_fetch` — fetch a URL and return its text
+  - `ask_user` — ask the user a question
+- **Sub-agent orchestration** — run several prompts as independent sub-agents
+  in parallel, each with its own context, sharing the provider.
 - **Providers** — an OpenAI-compatible HTTP provider, plus a scriptable mock
   provider for tests and demos.
 - **Config** — a small JSON config file (`~/.config/forge/config.json`).
@@ -42,6 +48,9 @@ forge init
 
 # Run the agent on a prompt (needs a configured provider)
 forge run "summarize this project"
+
+# Run several prompts as parallel sub-agents (file is a JSON array of strings)
+forge orchestrate prompts.json
 ```
 
 ### Configuration

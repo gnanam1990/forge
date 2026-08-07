@@ -32,6 +32,15 @@ pub enum Command {
     },
     /// List the available tools.
     Tools,
+    /// Run several prompts as parallel sub-agents. The file is a JSON array of
+    /// prompt strings.
+    Orchestrate {
+        /// Path to a JSON file containing an array of prompt strings.
+        file: PathBuf,
+        /// Override the max number of turns per sub-agent.
+        #[arg(long)]
+        max_turns: Option<usize>,
+    },
     /// Write a sample config file to the default location.
     Init,
 }
@@ -55,6 +64,22 @@ fn dispatch(cli: Cli) -> Result<()> {
                 if let Some(tool) = registry.get(&name) {
                     println!("{}: {}", tool.name(), tool.description());
                 }
+            }
+            Ok(())
+        }
+        Command::Orchestrate { file, max_turns } => {
+            let config = Config::load()?;
+            let turns = max_turns.or(config.max_turns).unwrap_or(10);
+            let provider = HttpProvider::new(&config.provider)?;
+            let raw = std::fs::read_to_string(&file)?;
+            let prompts: Vec<String> = serde_json::from_str(&raw).map_err(|e| {
+                crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
+            })?;
+            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let results = agent.run_parallel(&prompts)?;
+            for (i, result) in results.iter().enumerate() {
+                println!("=== sub-agent {} ===", i + 1);
+                println!("{result}");
             }
             Ok(())
         }

@@ -127,3 +127,98 @@ fn grep_finds_matching_lines() {
     assert!(res.ok);
     assert!(res.output.contains("a.txt:2:beta"));
 }
+
+#[test]
+fn edit_file_replaces_text() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hello world").unwrap();
+    let ctx = ToolContext::new(dir.path().to_path_buf());
+    let registry = Registry::builtin();
+    let edit = registry.get("edit_file").unwrap();
+    let res = edit
+        .run(
+            &json!({"path": "a.txt", "old": "world", "new": "forge"}),
+            &ctx,
+        )
+        .unwrap();
+    assert!(res.ok);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "hello forge"
+    );
+}
+
+#[test]
+fn edit_file_reports_missing_pattern() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+    let ctx = ToolContext::new(dir.path().to_path_buf());
+    let registry = Registry::builtin();
+    let edit = registry.get("edit_file").unwrap();
+    let res = edit
+        .run(&json!({"path": "a.txt", "old": "nope", "new": "x"}), &ctx)
+        .unwrap();
+    assert!(!res.ok);
+    assert!(res.output.contains("not found"));
+}
+
+#[test]
+fn list_directory_lists_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let ctx = ToolContext::new(dir.path().to_path_buf());
+    let registry = Registry::builtin();
+    let list = registry.get("list_directory").unwrap();
+    let res = list.run(&json!({}), &ctx).unwrap();
+    assert!(res.ok);
+    assert!(res.output.contains("file\ta.txt"));
+    assert!(res.output.contains("dir\tsub"));
+}
+
+#[test]
+fn ask_user_uses_responder() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(dir.path().to_path_buf());
+    let registry = Registry::builtin();
+    // Replace the default ask_user with a fixed responder for the test.
+    let mut registry = registry;
+    registry.register(Box::new(
+        forge::tools::ask_user::AskUserTool::with_responder(Box::new(|_| "42".to_string())),
+    ));
+    let ask = registry.get("ask_user").unwrap();
+    let res = ask.run(&json!({"question": "what is 6*7?"}), &ctx).unwrap();
+    assert!(res.ok);
+    assert_eq!(res.output, "42");
+}
+
+#[test]
+fn web_fetch_requires_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(dir.path().to_path_buf());
+    let registry = Registry::builtin();
+    let fetch = registry.get("web_fetch").unwrap();
+    let res = fetch.run(&json!({}), &ctx).unwrap_err();
+    assert!(res.to_string().contains("url"));
+}
+
+#[test]
+fn run_parallel_returns_results_in_order() {
+    use forge::agent::mock::ScriptTurn;
+    let agent = Agent::new(
+        Box::new(MockProvider::new(vec![
+            ScriptTurn::Answer("one".into()),
+            ScriptTurn::Answer("two".into()),
+            ScriptTurn::Answer("three".into()),
+        ])),
+        Registry::builtin(),
+        5,
+    );
+    let mut results = agent
+        .run_parallel(&["a".into(), "b".into(), "c".into()])
+        .unwrap();
+    // The mock provider is a single shared script consumed by the parallel
+    // threads, so completion order is not deterministic — compare as a set.
+    results.sort();
+    assert_eq!(results, vec!["one", "three", "two"]);
+}

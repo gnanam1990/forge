@@ -2,10 +2,14 @@
 //! that tools are looked up from by name. Tools are the only way the agent
 //! touches the outside world, so every tool enforces the workspace boundary.
 
+pub mod ask_user;
 pub mod bash;
+pub mod edit_file;
 pub mod glob;
 pub mod grep;
+pub mod list_directory;
 pub mod read_file;
+pub mod web_fetch;
 pub mod write_file;
 
 use std::path::{Path, PathBuf};
@@ -101,9 +105,13 @@ impl Registry {
         let mut registry = Self::new();
         registry.register(Box::new(read_file::ReadFileTool::new()));
         registry.register(Box::new(write_file::WriteFileTool::new()));
+        registry.register(Box::new(edit_file::EditFileTool::new()));
+        registry.register(Box::new(list_directory::ListDirectoryTool::new()));
         registry.register(Box::new(bash::BashTool::new()));
         registry.register(Box::new(glob::GlobTool::new()));
         registry.register(Box::new(grep::GrepTool::new()));
+        registry.register(Box::new(web_fetch::WebFetchTool::new()));
+        registry.register(Box::new(ask_user::AskUserTool::new()));
         registry
     }
 }

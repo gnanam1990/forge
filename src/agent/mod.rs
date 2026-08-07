@@ -6,6 +6,7 @@ pub mod http;
 pub mod mock;
 
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::tools::{Registry, ToolContext};
@@ -57,7 +58,7 @@ pub struct AgentOutcome {
 
 /// The agent: a provider plus a tool registry, driven by a turn budget.
 pub struct Agent {
-    provider: Box<dyn Provider>,
+    provider: Arc<dyn Provider>,
     registry: Registry,
     max_turns: usize,
 }
@@ -65,7 +66,7 @@ pub struct Agent {
 impl Agent {
     pub fn new(provider: Box<dyn Provider>, registry: Registry, max_turns: usize) -> Self {
         Self {
-            provider,
+            provider: Arc::from(provider),
             registry,
             max_turns,
         }
@@ -132,5 +133,36 @@ impl Agent {
             "reached max turns ({}) without a final answer",
             self.max_turns
         )))
+    }
+
+    /// Run several prompts as independent sub-agents in parallel, each with its
+    /// own fresh context and tool registry, sharing this agent's provider. The
+    /// results are returned in the same order as the prompts.
+    pub fn run_parallel(&self, prompts: &[String]) -> Result<Vec<String>> {
+        let handles: Vec<_> = prompts
+            .iter()
+            .map(|prompt| {
+                let provider = Arc::clone(&self.provider);
+                let prompt = prompt.clone();
+                let max_turns = self.max_turns;
+                std::thread::spawn(move || {
+                    let sub = Agent {
+                        provider,
+                        registry: Registry::builtin(),
+                        max_turns,
+                    };
+                    sub.run(&prompt).map(|outcome| outcome.final_text)
+                })
+            })
+            .collect();
+
+        let mut results = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let joined = handle
+                .join()
+                .map_err(|_| Error::Agent("sub-agent panicked".into()))?;
+            results.push(joined?);
+        }
+        Ok(results)
     }
 }
