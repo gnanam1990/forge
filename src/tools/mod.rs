@@ -2,6 +2,7 @@
 //! that tools are looked up from by name. Tools are the only way the agent
 //! touches the outside world, so every tool enforces the workspace boundary.
 
+pub mod apply_patch;
 pub mod ask_user;
 pub mod bash;
 pub mod edit_file;
@@ -10,6 +11,8 @@ pub mod glob;
 pub mod grep;
 pub mod list_directory;
 pub mod read_file;
+pub mod search;
+pub mod terminal;
 pub mod web_fetch;
 pub mod write_file;
 
@@ -123,6 +126,9 @@ impl Registry {
         registry.register(Box::new(git::GitStatusTool::new()));
         registry.register(Box::new(git::GitDiffTool::new()));
         registry.register(Box::new(git::GitCommitTool::new()));
+        registry.register(Box::new(apply_patch::ApplyPatchTool::new()));
+        registry.register(Box::new(search::SearchTool::new()));
+        registry.register(Box::new(terminal::TerminalTool::new()));
         registry
     }
 }
