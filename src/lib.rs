@@ -13,6 +13,7 @@ pub mod permission;
 pub mod session;
 pub mod tools;
 pub mod tui;
+pub mod watchdog;
 pub mod workflow;
 
 pub use error::{Error, Result};

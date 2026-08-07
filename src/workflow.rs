@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::Agent;
 use crate::context::estimate_tokens;
 use crate::error::{Error, Result};
+use crate::watchdog::Watchdog;
 
 /// A single task in a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,13 +117,21 @@ pub struct WorkflowOutcome {
 /// dependencies, a worker bound, and a token budget.
 pub struct WorkflowRunner {
     agent: Arc<Agent>,
+    watchdog: Option<Watchdog>,
 }
 
 impl WorkflowRunner {
     pub fn new(agent: Agent) -> Self {
         Self {
             agent: Arc::new(agent),
+            watchdog: None,
         }
+    }
+
+    /// Enable stall detection and retry for each task.
+    pub fn with_watchdog(mut self, watchdog: Watchdog) -> Self {
+        self.watchdog = Some(watchdog);
+        self
     }
 
     /// Execute the workflow. Returns per-task results keyed by task id.
@@ -155,11 +164,18 @@ impl WorkflowRunner {
             for task in &batch {
                 let agent = Arc::clone(&self.agent);
                 let prompt = task.prompt.clone();
+                let prompt_for_watchdog = prompt.clone();
                 let id = task.id.clone();
+                let watchdog = self.watchdog.clone();
                 handles.push(std::thread::spawn(move || {
-                    let text = agent
-                        .run_prompt(&prompt)
-                        .unwrap_or_else(|e| format!("error: {e}"));
+                    let text = match watchdog {
+                        Some(w) => w
+                            .run(move || agent.run_prompt(&prompt_for_watchdog))
+                            .unwrap_or_else(|e| format!("error: {e}")),
+                        None => agent
+                            .run_prompt(&prompt)
+                            .unwrap_or_else(|e| format!("error: {e}")),
+                    };
                     (id, text, estimate_tokens(&prompt))
                 }));
             }
