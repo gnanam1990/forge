@@ -48,6 +48,9 @@ pub enum Command {
         /// Override the max number of turns per task.
         #[arg(long)]
         max_turns: Option<usize>,
+        /// Send a completion notification.
+        #[arg(long)]
+        notify: bool,
     },
     /// Resume a saved session with a new prompt.
     Resume {
@@ -115,7 +118,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Workflow { file, max_turns } => {
+        Command::Workflow {
+            file,
+            max_turns,
+            notify,
+        } => {
             let config = Config::load()?;
             let turns = max_turns.or(config.max_turns).unwrap_or(10);
             let provider = HttpProvider::new(&config.provider)?;
@@ -133,6 +140,15 @@ fn dispatch(cli: Cli) -> Result<()> {
                 "[forge] {} task(s), {} tokens",
                 outcome.tasks_run, outcome.tokens_used
             );
+            if notify {
+                crate::notify::Notifier::new(true).notify(
+                    "forge",
+                    &format!(
+                        "workflow {} finished ({} tasks)",
+                        workflow.name, outcome.tasks_run
+                    ),
+                )?;
+            }
             Ok(())
         }
         Command::Resume {

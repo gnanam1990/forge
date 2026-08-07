@@ -10,6 +10,7 @@ pub mod config;
 pub mod context;
 pub mod error;
 pub mod memory;
+pub mod notify;
 pub mod permission;
 pub mod sandbox;
 pub mod session;
