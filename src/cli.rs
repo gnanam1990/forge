@@ -227,18 +227,11 @@ pub enum Command {
     },
     /// Print version, tools, and config summary.
     Info,
-    /// Print the current config (with the API key redacted).
+    /// Manage the config: `config` (show), `config reset`, `config get <key>`,
+    /// `config set <key> <value>`.
     Config {
-        /// Reset the config to defaults.
-        #[arg(long)]
-        reset: bool,
-    },
-    /// Set a config value: `config set <key> <value>`.
-    ConfigSet {
-        /// The config key (e.g. provider.model, max_turns).
-        key: String,
-        /// The value.
-        value: String,
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
     },
     /// Manage sessions: `session <delete|rename> <id> [new]`.
     Session {
@@ -355,8 +348,27 @@ pub enum Command {
         #[command(subcommand)]
         action: ModelAction,
     },
-    /// Write a sample config file to the default location.
-    Init,
+    /// Write a sample config file to the default location, or scaffold a
+    /// project from a template: `init --template <rust|node|python|web>`.
+    Init {
+        /// The project template to scaffold.
+        #[arg(long)]
+        template: Option<String>,
+    },
+    /// Start an interactive REPL that runs prompts in a persistent session.
+    Repl,
+    /// Run a command on a remote host over SSH: `ssh <host> <command>`.
+    Ssh {
+        /// The remote host.
+        host: String,
+        /// The command to run.
+        command: String,
+    },
+    /// Run a terminal command in the workspace: `terminal <command>`.
+    Terminal {
+        /// The command to run.
+        command: String,
+    },
     /// Generate shell completions: `completions <bash|zsh|fish>`.
     Completions {
         /// The shell to generate completions for.
@@ -368,6 +380,27 @@ pub enum Command {
     Upgrade,
     /// Show a summary of the current identity and configuration.
     Whoami,
+}
+
+/// Subcommands for `forge config`.
+#[derive(Subcommand)]
+pub enum ConfigAction {
+    /// Show the current config (with the API key redacted).
+    Show,
+    /// Reset the config to defaults.
+    Reset,
+    /// Read a config value.
+    Get {
+        /// The config key (e.g. provider.model, max_turns).
+        key: String,
+    },
+    /// Set a config value.
+    Set {
+        /// The config key (e.g. provider.model, max_turns).
+        key: String,
+        /// The value.
+        value: String,
+    },
 }
 
 /// Subcommands for `forge telemetry`.
@@ -402,6 +435,9 @@ pub enum GitAction {
         /// Limit the number of commits shown.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Show diff statistics for each commit.
+        #[arg(long)]
+        stat: bool,
     },
     /// List branches.
     Branch,
@@ -587,6 +623,108 @@ fn scan_todos(root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Scaffold a project from a named template in the current directory.
+fn scaffold_template(name: &str) -> Result<()> {
+    use std::fs;
+    let cwd = std::env::current_dir()?;
+    let write = |rel: &str, content: &str| -> Result<()> {
+        let path = cwd.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, content)?;
+        println!("wrote {}", path.display());
+        Ok(())
+    };
+    match name {
+        "rust" => {
+            write("Cargo.toml", "[package]\nname = \"my_project\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n")?;
+            write(
+                "src/main.rs",
+                "fn main() {\n    println!(\"hello from rust\");\n}\n",
+            )?;
+            write("README.md", "# My Rust Project\n")?;
+        }
+        "node" => {
+            write(
+                "package.json",
+                "{\n  \"name\": \"my-project\",\n  \"version\": \"0.1.0\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"start\": \"node index.js\"\n  }\n}\n",
+            )?;
+            write("index.js", "console.log('hello from node');\n")?;
+            write("README.md", "# My Node Project\n")?;
+        }
+        "python" => {
+            write(
+                "pyproject.toml",
+                "[project]\nname = \"my-project\"\nversion = \"0.1.0\"\n",
+            )?;
+            write("main.py", "def main():\n    print('hello from python')\n\nif __name__ == '__main__':\n    main()\n")?;
+            write("README.md", "# My Python Project\n")?;
+        }
+        "web" => {
+            write("index.html", "<!doctype html>\n<html>\n<head><title>My Site</title></head>\n<body><h1>Hello from web</h1></body>\n</html>\n")?;
+            write("style.css", "body { font-family: sans-serif; }\n")?;
+            write("README.md", "# My Web Project\n")?;
+        }
+        other => {
+            return Err(crate::error::Error::InvalidArgs(format!(
+                "unknown template {other}; use rust, node, python, or web"
+            )))
+        }
+    }
+    println!("scaffolded {name} project in {}", cwd.display());
+    Ok(())
+}
+
+/// Run an interactive line-based REPL that keeps a persistent session.
+fn run_repl(config: &Config) -> Result<()> {
+    use std::io::{BufRead, Write};
+    let turns = config.max_turns.unwrap_or(10);
+    let provider = HttpProvider::new(&config.provider)?;
+    let wiring = crate::wiring::build_wiring(config)?;
+    let agent = Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
+    let dir = crate::session::default_sessions_dir()?;
+    let id = format!(
+        "repl-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    let mut session = crate::session::Session::new(&id);
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    println!("forge repl — type a prompt, or `exit` to quit. Session: {id}");
+    loop {
+        print!("> ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let prompt = line.trim().to_string();
+        if prompt.is_empty() {
+            continue;
+        }
+        if prompt == "exit" || prompt == "quit" {
+            break;
+        }
+        match agent.run_into(&mut session.messages, &prompt) {
+            Ok(outcome) => {
+                println!("{}", outcome.final_text);
+                eprintln!(
+                    "[forge] {} turn(s), {} tool call(s)",
+                    outcome.turns, outcome.tool_calls
+                );
+            }
+            Err(e) => eprintln!("error: {e}"),
+        }
+    }
+    session.save(&dir)?;
+    println!("session saved as {id}");
+    Ok(())
+}
+
 /// Print a summary of all commands.
 fn print_help() {
     println!(
@@ -629,11 +767,15 @@ fn print_help() {
          desktop <screenshot|click|type>               desktop control\n\
          plugin <list|enable|disable|add>              manage plugins\n\
          alias [name] [command]                        list/add/remove aliases\n\
-         config [--reset]                              show or reset config\n\
+         config [show|reset|get <key>|set <key> <value>]  manage config\n\
          doctor [--json] [--fix]                       check environment\n\
          info                                          show summary\n\
          setup                                         write config + samples\n\
-         init                                          scaffold a project\n\
+         init [--template <rust|node|python|web>]      scaffold a project\n\
+         repl                                          interactive REPL\n\
+         ssh <host> <command>                          run a command over SSH\n\
+         terminal <command>                             run a terminal command\n\
+         config get <key>                              read a config value\n\
          completions <bash|zsh|fish>                   shell completions\n\
          man                                           man-style reference\n\
          upgrade                                       self-update and rebuild\n\
@@ -1492,18 +1634,35 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("sessions: {}", sessions.len());
             Ok(())
         }
-        Command::Config { reset } => {
+        Command::Config { action } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
+            let action_name = match &action {
+                None => "show",
+                Some(ConfigAction::Show) => "show",
+                Some(ConfigAction::Reset) => "reset",
+                Some(ConfigAction::Get { .. }) => "get",
+                Some(ConfigAction::Set { .. }) => "set",
+            };
             wiring
                 .telemetry
-                .record("config", serde_json::json!({ "reset": reset }))?;
-            if reset {
-                let path = crate::config::config_path()?;
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                .record("config", serde_json::json!({ "action": action_name }))?;
+            match action {
+                None | Some(ConfigAction::Show) => {
+                    let mut redacted = config.clone();
+                    if let Some(key) = redacted.provider.api_key.as_mut() {
+                        if !key.is_empty() {
+                            *key = "***".to_string();
+                        }
+                    }
+                    println!("{}", serde_json::to_string_pretty(&redacted)?);
                 }
-                let sample = r#"{
+                Some(ConfigAction::Reset) => {
+                    let path = crate::config::config_path()?;
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    let sample = r#"{
   "workspace": ".",
   "provider": {
     "base_url": "https://api.openai.com/v1",
@@ -1517,41 +1676,74 @@ fn dispatch(cli: Cli) -> Result<()> {
   "telemetry": true
 }
 "#;
-                std::fs::write(&path, sample)?;
-                println!("reset config to defaults at {}", path.display());
-                return Ok(());
-            }
-            let mut redacted = config.clone();
-            if let Some(key) = redacted.provider.api_key.as_mut() {
-                if !key.is_empty() {
-                    *key = "***".to_string();
+                    std::fs::write(&path, sample)?;
+                    println!("reset config to defaults at {}", path.display());
+                }
+                Some(ConfigAction::Get { key }) => {
+                    let value = match key.as_str() {
+                        "provider.model" => config
+                            .provider
+                            .model
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
+                        "provider.base_url" => config
+                            .provider
+                            .base_url
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
+                        "provider.api_key" => {
+                            if config.provider.api_key.is_some() {
+                                serde_json::Value::String("***".into())
+                            } else {
+                                serde_json::Value::Null
+                            }
+                        }
+                        "max_turns" => config
+                            .max_turns
+                            .map(|t| serde_json::Value::Number(t.into()))
+                            .unwrap_or(serde_json::Value::Null),
+                        "workspace" => config
+                            .workspace
+                            .map(|p| serde_json::Value::String(p.display().to_string()))
+                            .unwrap_or(serde_json::Value::Null),
+                        "telemetry" => serde_json::Value::Bool(config.telemetry),
+                        other => {
+                            return Err(crate::error::Error::InvalidArgs(format!(
+                                "unknown config key {other}"
+                            )))
+                        }
+                    };
+                    println!("{value}");
+                }
+                Some(ConfigAction::Set { key, value }) => {
+                    let path = crate::config::config_path()?;
+                    let mut config = config;
+                    match key.as_str() {
+                        "provider.model" => config.provider.model = Some(value.clone()),
+                        "provider.base_url" => config.provider.base_url = Some(value.clone()),
+                        "provider.api_key" => config.provider.api_key = Some(value.clone()),
+                        "max_turns" => {
+                            config.max_turns = Some(value.parse().map_err(|_| {
+                                crate::error::Error::InvalidArgs(
+                                    "max_turns must be a number".into(),
+                                )
+                            })?)
+                        }
+                        "workspace" => config.workspace = Some(std::path::PathBuf::from(&value)),
+                        "telemetry" => config.telemetry = value == "true" || value == "on",
+                        other => {
+                            return Err(crate::error::Error::InvalidArgs(format!(
+                                "unknown config key {other}"
+                            )))
+                        }
+                    }
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("set {key} = {value}");
                 }
             }
-            println!("{}", serde_json::to_string_pretty(&redacted)?);
-            Ok(())
-        }
-        Command::ConfigSet { key, value } => {
-            let path = crate::config::config_path()?;
-            let mut config = Config::load()?;
-            match key.as_str() {
-                "provider.model" => config.provider.model = Some(value.clone()),
-                "provider.base_url" => config.provider.base_url = Some(value.clone()),
-                "provider.api_key" => config.provider.api_key = Some(value.clone()),
-                "max_turns" => {
-                    config.max_turns = Some(value.parse().map_err(|_| {
-                        crate::error::Error::InvalidArgs("max_turns must be a number".into())
-                    })?)
-                }
-                "workspace" => config.workspace = Some(std::path::PathBuf::from(&value)),
-                "telemetry" => config.telemetry = value == "true" || value == "on",
-                other => {
-                    return Err(crate::error::Error::InvalidArgs(format!(
-                        "unknown config key {other}"
-                    )))
-                }
-            }
-            std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
-            println!("set {key} = {value}");
             Ok(())
         }
         Command::Session { action, id, new } => {
@@ -2198,9 +2390,14 @@ fn dispatch(cli: Cli) -> Result<()> {
             wiring.telemetry.record("git", serde_json::json!({}))?;
             let ws = config.workspace_root();
             match action {
-                GitAction::Log { limit } => {
+                GitAction::Log { limit, stat } => {
+                    let limit_str = limit.to_string();
+                    let mut args = vec!["log", "--oneline", "-n", &limit_str];
+                    if stat {
+                        args.push("--stat");
+                    }
                     let out = std::process::Command::new("git")
-                        .args(["log", "--oneline", "-n", &limit.to_string()])
+                        .args(&args)
                         .current_dir(&ws)
                         .output()?;
                     let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -2524,10 +2721,16 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("telemetry: {}", if config.telemetry { "on" } else { "off" });
             Ok(())
         }
-        Command::Init => {
+        Command::Init { template } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            wiring.telemetry.record("init", serde_json::json!({}))?;
+            wiring
+                .telemetry
+                .record("init", serde_json::json!({ "template": template }))?;
+            if let Some(tpl) = template {
+                scaffold_template(&tpl)?;
+                return Ok(());
+            }
             let path = crate::config::config_path()?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -2569,6 +2772,40 @@ fn dispatch(cli: Cli) -> Result<()> {
             let forge_dir = cwd.join(".forge");
             std::fs::create_dir_all(&forge_dir)?;
             println!("scaffolded project in {}", cwd.display());
+            Ok(())
+        }
+        Command::Repl => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("repl", serde_json::json!({}))?;
+            run_repl(&config)?;
+            Ok(())
+        }
+        Command::Ssh { host, command } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring
+                .telemetry
+                .record("ssh", serde_json::json!({ "host": host }))?;
+            let ctx = crate::tools::ToolContext::new(config.workspace_root());
+            let tool = crate::tools::ssh::SshTool::new();
+            let result = crate::tools::Tool::run(
+                &tool,
+                &serde_json::json!({ "host": host, "command": command }),
+                &ctx,
+            )?;
+            println!("{}", result.output);
+            Ok(())
+        }
+        Command::Terminal { command } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("terminal", serde_json::json!({}))?;
+            let ctx = crate::tools::ToolContext::new(config.workspace_root());
+            let tool = crate::tools::terminal::TerminalTool::new();
+            let result =
+                crate::tools::Tool::run(&tool, &serde_json::json!({ "command": command }), &ctx)?;
+            println!("{}", result.output);
             Ok(())
         }
         Command::Help => {
