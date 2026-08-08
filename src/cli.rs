@@ -127,6 +127,13 @@ pub enum Command {
     Info,
     /// Print the current config (with the API key redacted).
     Config,
+    /// Manage plugins: `plugin <list|enable|disable|add>`.
+    Plugin {
+        /// Action: list | enable | disable | add.
+        action: String,
+        /// Plugin name (for enable/disable) or file path (for add).
+        arg: Option<String>,
+    },
     /// List plugins loaded from the configured plugins directory.
     Plugins,
     /// Set the session effort posture: `effort <auto|balanced|thorough|zeromaxing>`.
@@ -177,7 +184,13 @@ fn which(name: &str) -> bool {
 fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Tools => {
-            let registry = Registry::builtin();
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            let registry = wiring.registry;
+            wiring.telemetry.record(
+                "tools",
+                serde_json::json!({ "count": registry.names().len() }),
+            )?;
             for name in registry.names() {
                 if let Some(tool) = registry.get(&name) {
                     println!("{}: {}", tool.name(), tool.description());
@@ -259,11 +272,19 @@ fn dispatch(cli: Cli) -> Result<()> {
             let config = Config::load()?;
             let turns = max_turns.or(config.max_turns).unwrap_or(10);
             let provider = HttpProvider::new(&config.provider)?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let dir = crate::session::default_sessions_dir()?;
             let mut session = crate::session::Session::load(&dir, &session)?;
-            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let agent =
+                Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
             let outcome = agent.run_into(&mut session.messages, &prompt)?;
             session.save(&dir)?;
+            wiring.telemetry.record(
+                "resume",
+                serde_json::json!({
+                    "turns": outcome.turns,
+                }),
+            )?;
             println!("{}", outcome.final_text);
             eprintln!(
                 "[forge] {} turn(s), {} tool call(s)",
@@ -296,6 +317,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             crate::tui::run_chat(&config)
         }
         Command::Memory { action, key, value } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring
+                .telemetry
+                .record("memory", serde_json::json!({ "action": action }))?;
             let path = crate::memory::default_memory_path()?;
             let mut memory = crate::memory::Memory::load(path.clone())?;
             match action.as_str() {
@@ -549,6 +575,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Doctor => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("doctor", serde_json::json!({}))?;
             let mut ok = true;
             let mut check = |name: &str, pass: bool, detail: &str| {
                 println!("[{}] {name}: {detail}", if pass { "ok" } else { "MISSING" });
@@ -556,7 +585,6 @@ fn dispatch(cli: Cli) -> Result<()> {
                     ok = false;
                 }
             };
-            let config = Config::load()?;
             check(
                 "config",
                 config.provider.model.is_some(),
@@ -585,7 +613,9 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Info => {
             let config = Config::load()?;
-            let registry = Registry::builtin();
+            let wiring = crate::wiring::build_wiring(&config)?;
+            let registry = wiring.registry;
+            wiring.telemetry.record("info", serde_json::json!({}))?;
             let sessions = crate::session::Session::list(&crate::session::default_sessions_dir()?)?;
             println!("forge {}", env!("CARGO_PKG_VERSION"));
             println!("workspace: {}", config.workspace_root().display());
@@ -620,6 +650,59 @@ fn dispatch(cli: Cli) -> Result<()> {
                 println!("no plugins loaded from {}", dir.display());
             } else {
                 println!("loaded {count} plugin tool(s) from {}", dir.display());
+            }
+            Ok(())
+        }
+        Command::Plugin { action, arg } => {
+            let config = Config::load()?;
+            let dir = config
+                .plugins_dir
+                .clone()
+                .unwrap_or_else(|| config.workspace_root().join(".forge").join("plugins"));
+            let state_path = dir.join("state.json");
+            let mut registry = crate::plugin::PluginRegistry::new(state_path);
+            registry.load_dir(&dir)?;
+            match action.as_str() {
+                "list" => {
+                    for entry in registry.list() {
+                        println!(
+                            "{} [{}] {} tool(s)",
+                            entry.name,
+                            if entry.enabled { "enabled" } else { "disabled" },
+                            entry.tools.len()
+                        );
+                    }
+                }
+                "enable" => {
+                    let name = arg.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("plugin name required".into())
+                    })?;
+                    registry.enable(&name)?;
+                    println!("enabled {name}");
+                }
+                "disable" => {
+                    let name = arg.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("plugin name required".into())
+                    })?;
+                    registry.disable(&name)?;
+                    println!("disabled {name}");
+                }
+                "add" => {
+                    let file = arg.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("plugin file required".into())
+                    })?;
+                    std::fs::create_dir_all(&dir)?;
+                    let dest =
+                        dir.join(std::path::Path::new(&file).file_name().unwrap_or_default());
+                    std::fs::copy(&file, &dest)?;
+                    registry.load_dir(&dir)?;
+                    println!("added plugin from {file}");
+                }
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unknown plugin action {other}"
+                    )))
+                }
             }
             Ok(())
         }

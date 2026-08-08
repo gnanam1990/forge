@@ -264,6 +264,105 @@ impl Browser {
         )
     }
 
+    /// Get an attribute of the first element matching a selector.
+    pub fn get_attribute(&self, target: &Target, selector: &str, attr: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? (e.getAttribute({}) || '') : ''; }})()",
+            serde_json::to_string(selector)?,
+            serde_json::to_string(attr)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Set an attribute on the first element matching a selector.
+    pub fn set_attribute(
+        &self,
+        target: &Target,
+        selector: &str,
+        attr: &str,
+        value: &str,
+    ) -> Result<()> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); if (e) e.setAttribute({}, {}); }})()",
+            serde_json::to_string(selector)?,
+            serde_json::to_string(attr)?,
+            serde_json::to_string(value)?
+        );
+        self.evaluate(target, &expr)?;
+        Ok(())
+    }
+
+    /// Get the value of the first element matching a selector.
+    pub fn get_value(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? (e.value || '') : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Set the value of the first element matching a selector.
+    pub fn set_value(&self, target: &Target, selector: &str, value: &str) -> Result<()> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); if (e) {{ e.value = {}; e.dispatchEvent(new Event('input', {{ bubbles: true }})); }} }})()",
+            serde_json::to_string(selector)?,
+            serde_json::to_string(value)?
+        );
+        self.evaluate(target, &expr)?;
+        Ok(())
+    }
+
+    /// Focus the first element matching a selector.
+    pub fn focus(&self, target: &Target, selector: &str) -> Result<()> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); if (e) e.focus(); }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)?;
+        Ok(())
+    }
+
+    /// Get the bounding rect of the first element matching a selector.
+    pub fn get_rect(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); if (!e) return '{{}}'; const r = e.getBoundingClientRect(); return JSON.stringify({{x: r.x, y: r.y, width: r.width, height: r.height}}); }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// List the links on the page as `text -> href` lines.
+    pub fn get_links(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "Array.from(document.querySelectorAll('a')).map(a => (a.innerText.trim() + ' -> ' + a.href)).join('\\n')",
+        )
+    }
+
+    /// List the images on the page as `alt -> src` lines.
+    pub fn get_images(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "Array.from(document.querySelectorAll('img')).map(i => (i.alt + ' -> ' + i.src)).join('\\n')",
+        )
+    }
+
+    /// List the forms on the page.
+    pub fn get_forms(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "Array.from(document.querySelectorAll('form')).map((f, i) => i + ': action=' + f.action + ' method=' + f.method).join('\\n')",
+        )
+    }
+
+    /// Get the page's meta tags.
+    pub fn get_meta(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "Array.from(document.querySelectorAll('meta')).map(m => (m.getAttribute('name') || m.getAttribute('property') || '') + '=' + (m.getAttribute('content') || '')).filter(s => s.startsWith('=') === false).join('\\n')",
+        )
+    }
+
     /// Click at a coordinate in the target.
     pub fn click(&self, target: &Target, x: i32, y: i32) -> Result<()> {
         self.send_command(

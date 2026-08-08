@@ -15,6 +15,7 @@ pub struct McpClient {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    server_info: Value,
 }
 
 impl McpClient {
@@ -40,6 +41,7 @@ impl McpClient {
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
+            server_info: Value::Null,
         };
         client.initialize()?;
         Ok(client)
@@ -51,20 +53,35 @@ impl McpClient {
         let request = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let mut line = serde_json::to_string(&request)?;
         line.push('\n');
+
+        // Retry once on a transport error (write/read/parse), in case the server
+        // was momentarily busy. A JSON-RPC error response is not retried.
+        let mut last_err: Option<Error> = None;
+        for _ in 0..2 {
+            match self.transport_roundtrip(&line) {
+                Ok(value) => {
+                    if let Some(err) = value.get("error") {
+                        return Err(Error::Provider(format!("MCP error: {err}")));
+                    }
+                    return value
+                        .get("result")
+                        .cloned()
+                        .ok_or_else(|| Error::Provider("no result".into()));
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| Error::Provider("MCP request failed".into())))
+    }
+
+    /// Write a request line and read the response, returning the parsed JSON.
+    fn transport_roundtrip(&mut self, line: &str) -> Result<Value> {
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.flush()?;
-
         let mut response = String::new();
         self.stdout.read_line(&mut response)?;
-        let value: Value = serde_json::from_str(&response)
-            .map_err(|e| Error::Provider(format!("bad MCP response: {e}")))?;
-        if let Some(err) = value.get("error") {
-            return Err(Error::Provider(format!("MCP error: {err}")));
-        }
-        value
-            .get("result")
-            .cloned()
-            .ok_or_else(|| Error::Provider("no result".into()))
+        serde_json::from_str(&response)
+            .map_err(|e| Error::Provider(format!("bad MCP response: {e}")))
     }
 
     /// Perform the MCP initialize handshake.
@@ -74,7 +91,7 @@ impl McpClient {
             "capabilities": {},
             "clientInfo": { "name": "forge", "version": "0.1.0" }
         });
-        self.request("initialize", params)?;
+        self.server_info = self.request("initialize", params)?;
         // Send the initialized notification (no id).
         let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         let mut line = serde_json::to_string(&notification)?;
@@ -82,6 +99,23 @@ impl McpClient {
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.flush()?;
         Ok(())
+    }
+
+    /// The server's reported name and version.
+    pub fn server_info(&self) -> String {
+        let name = self
+            .server_info
+            .get("serverInfo")
+            .and_then(|s| s.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let version = self
+            .server_info
+            .get("serverInfo")
+            .and_then(|s| s.get("version"))
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        format!("{name} {version}")
     }
 
     /// List the tool names the server exposes.
@@ -98,7 +132,26 @@ impl McpClient {
             .collect())
     }
 
-    /// Call a tool and return its text content.
+    /// List the tools as (name, description) pairs.
+    pub fn list_tools_with_descriptions(&mut self) -> Result<Vec<(String, String)>> {
+        let result = self.request("tools/list", json!({}))?;
+        let tools = result
+            .get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(tools
+            .iter()
+            .filter_map(|t| {
+                let name = t.get("name").and_then(Value::as_str)?;
+                let desc = t.get("description").and_then(Value::as_str).unwrap_or("");
+                Some((name.to_string(), desc.to_string()))
+            })
+            .collect())
+    }
+
+    /// Call a tool and return its text content (handling both text and
+    /// structured JSON content).
     pub fn call_tool(&mut self, name: &str, args: Value) -> Result<String> {
         let result = self.request("tools/call", json!({ "name": name, "arguments": args }))?;
         let content = result
@@ -108,8 +161,22 @@ impl McpClient {
             .unwrap_or_default();
         let mut text = String::new();
         for item in content {
-            if let Some(t) = item.get("text").and_then(Value::as_str) {
-                text.push_str(t);
+            match item.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(t) = item.get("text").and_then(Value::as_str) {
+                        text.push_str(t);
+                    }
+                }
+                Some("json") => {
+                    if let Some(j) = item.get("json") {
+                        text.push_str(&serde_json::to_string_pretty(j).unwrap_or_default());
+                    }
+                }
+                _ => {
+                    if let Some(t) = item.get("text").and_then(Value::as_str) {
+                        text.push_str(t);
+                    }
+                }
             }
         }
         Ok(text)

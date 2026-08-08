@@ -45,8 +45,8 @@ built to be simple, testable, and easy to extend.
 - **Session listing** — `forge sessions` shows message counts and timestamps.
 - **Search index invalidation** — the code index rebuilds when sources change.
 - **Plugins** — a plugin bundle system, a plugin registry that tracks and
-  enables/disables plugins, plus loading command-backed plugins from a
-  directory of JSON files.
+  enables/disables plugins, a `forge plugin` CLI (list/enable/disable/add), plus
+  loading command-backed plugins from a directory of JSON files.
 - **Telemetry** — a minimal usage tracker that appends JSON events to a file.
 - **Memory** — a durable cross-session fact store, wired into the agent loop via
   `remember`/`recall` tools.
