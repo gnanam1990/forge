@@ -29,16 +29,18 @@ built to be simple, testable, and easy to extend.
   messages into a summary when the conversation grows too large.
 - **Memory** — a durable cross-session fact store.
 - **Sandbox** — command isolation with a minimal environment.
-- **Interactive TUI** — a line-based chat REPL with approval prompts.
+- **Interactive TUI** — a full-screen terminal UI (ratatui) with a message
+  list, input box, and status bar.
 - **Notifications** — completion alerts (macOS native).
 - **Hooks & plugins** — before/after tool hooks and a plugin bundle system.
 - **Cron/automations** — an interval-based job scheduler.
 - **Code/PR review** — heuristic diff review.
 - **MCP** — a minimal Model Context Protocol client over stdio.
-- **Browser automation** — CDP headless Chrome control, including WebSocket
-  `Runtime.evaluate`.
+- **Browser automation** — CDP headless Chrome with navigate, click, type,
+  screenshot, and `Runtime.evaluate` over the DevTools WebSocket.
 - **Computer/desktop use** — screenshot + coordinate control (macOS).
 - **SSH** — run commands on a remote host.
+- **Sandbox** — command isolation with configurable network/file restrictions.
 - **Model-based summarization** — context compaction asks the provider to
   summarize, with a heuristic fallback.
 - **`forge setup`** — writes a working config plus sample workflow and cron

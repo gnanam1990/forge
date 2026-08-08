@@ -102,6 +102,15 @@ pub enum Command {
         /// Evaluate a JavaScript expression in the opened page.
         #[arg(long)]
         eval: Option<String>,
+        /// Click at a coordinate: `--click x,y`.
+        #[arg(long)]
+        click: Option<String>,
+        /// Type text into the page.
+        #[arg(long)]
+        r#type: Option<String>,
+        /// Save a screenshot to a path.
+        #[arg(long)]
+        screenshot: Option<String>,
     },
     /// Desktop control: `screenshot <path>`, `click <x> <y>`, `type <text>`.
     Desktop {
@@ -318,13 +327,45 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("{output}");
             Ok(())
         }
-        Command::Browser { url, eval } => {
+        Command::Browser {
+            url,
+            eval,
+            click,
+            r#type,
+            screenshot,
+        } => {
             let browser = crate::browser::Browser::launch()?;
             let target = browser.open(&url)?;
             println!("opened {url} (target {})", target.id);
             if let Some(js) = eval {
                 let result = browser.evaluate(&target, &js)?;
                 println!("eval result: {result}");
+            }
+            if let Some(coord) = click {
+                let mut parts = coord.split(',');
+                let x: i32 = parts
+                    .next()
+                    .and_then(|s| s.trim().parse().ok())
+                    .ok_or_else(|| crate::error::Error::InvalidArgs("--click needs x,y".into()))?;
+                let y: i32 = parts
+                    .next()
+                    .and_then(|s| s.trim().parse().ok())
+                    .ok_or_else(|| crate::error::Error::InvalidArgs("--click needs x,y".into()))?;
+                browser.click(&target, x, y)?;
+                println!("clicked {x},{y}");
+            }
+            if let Some(text) = r#type {
+                browser.type_text(&target, &text)?;
+                println!("typed");
+            }
+            if let Some(path) = screenshot {
+                let data = browser.screenshot(&target)?;
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|e| crate::error::Error::Agent(format!("decode screenshot: {e}")))?;
+                std::fs::write(&path, bytes)?;
+                println!("screenshot saved to {path}");
             }
             for tab in browser.list()? {
                 println!("tab: {tab}");

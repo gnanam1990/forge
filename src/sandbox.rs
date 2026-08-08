@@ -14,17 +14,32 @@ pub struct SandboxResult {
     pub exit_code: i32,
 }
 
+/// Sandbox restrictions.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxConfig {
+    /// Deny all network access.
+    pub deny_network: bool,
+    /// Deny writes outside the sandbox working directory.
+    pub deny_write: bool,
+}
+
 /// Runs commands in isolation.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     enabled: bool,
+    config: SandboxConfig,
     work_dir: PathBuf,
 }
 
 impl Sandbox {
     pub fn new(enabled: bool) -> Self {
+        Self::with_config(enabled, SandboxConfig::default())
+    }
+
+    pub fn with_config(enabled: bool, config: SandboxConfig) -> Self {
         Self {
             enabled,
+            config,
             work_dir: std::env::temp_dir().join(format!("forge-sandbox-{}", std::process::id())),
         }
     }
@@ -49,9 +64,16 @@ impl Sandbox {
         let script = self.work_dir.join("cmd.sh");
         std::fs::write(&script, command)?;
 
-        // On macOS, wrap with sandbox-exec to deny network when enabled.
+        // On macOS, wrap with sandbox-exec to enforce the configured
+        // restrictions when enabled.
         let full = if self.enabled && cfg!(target_os = "macos") {
-            let profile = "(version 1)\n(deny network*)\n(allow default)\n";
+            let mut profile = String::from("(version 1)\n(allow default)\n");
+            if self.config.deny_network {
+                profile.push_str("(deny network*)\n");
+            }
+            if self.config.deny_write {
+                profile.push_str("(deny file-write*)\n");
+            }
             let profile_path = self.work_dir.join("sandbox.sb");
             std::fs::write(&profile_path, profile)?;
             format!(
