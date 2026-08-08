@@ -103,6 +103,10 @@ pub fn load_plugins_from_dir(dir: &Path, registry: &mut Registry) -> crate::erro
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
+        // Skip the registry's own state file.
+        if path.file_name().and_then(|n| n.to_str()) == Some("state.json") {
+            continue;
+        }
         let raw = std::fs::read_to_string(&path)?;
         let plugin: PluginFile = serde_json::from_str(&raw)
             .map_err(|e| crate::error::Error::Config(format!("parse {}: {e}", path.display())))?;
@@ -157,6 +161,10 @@ impl PluginRegistry {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
+            // Skip the registry's own state file.
+            if path.file_name().and_then(|n| n.to_str()) == Some("state.json") {
+                continue;
+            }
             let raw = std::fs::read_to_string(&path)?;
             let plugin: PluginFile = serde_json::from_str(&raw).map_err(|e| {
                 crate::error::Error::Config(format!("parse {}: {e}", path.display()))
@@ -189,6 +197,10 @@ impl PluginRegistry {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            // Skip the registry's own state file.
+            if path.file_name().and_then(|n| n.to_str()) == Some("state.json") {
                 continue;
             }
             let raw = std::fs::read_to_string(&path)?;
@@ -302,5 +314,26 @@ mod tests {
             .run(&json!({"value": "hi"}), &ctx)
             .unwrap();
         assert_eq!(res.output, "hi");
+    }
+
+    #[test]
+    fn load_dir_skips_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("demo.json"),
+            r#"{"name":"demo","tools":[{"name":"greet","command":"echo","description":"greets"}]}"#,
+        )
+        .unwrap();
+        // A state.json that is NOT a valid plugin file must be ignored.
+        std::fs::write(
+            dir.path().join("state.json"),
+            r#"[{"name":"demo","enabled":true,"tools":["greet"]}]"#,
+        )
+        .unwrap();
+        let mut registry = PluginRegistry::new(dir.path().join("state.json"));
+        let count = registry.load_dir(dir.path()).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(registry.list().len(), 1);
+        assert_eq!(registry.list()[0].name, "demo");
     }
 }

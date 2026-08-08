@@ -241,12 +241,8 @@ pub enum Command {
     },
     /// Manage sessions: `session <delete|rename> <id> [new]`.
     Session {
-        /// Action: delete | rename.
-        action: String,
-        /// The session id.
-        id: String,
-        /// New id (for rename).
-        new: Option<String>,
+        #[command(subcommand)]
+        action: SessionAction,
     },
     /// Check for updates against the remote.
     Update,
@@ -411,6 +407,11 @@ pub enum ConfigAction {
     Validate,
     /// Print the path to the config file.
     Path,
+    /// Remove a config key.
+    Unset {
+        /// The config key (e.g. provider.model, max_turns).
+        key: String,
+    },
 }
 
 /// Subcommands for `forge telemetry`.
@@ -427,6 +428,8 @@ pub enum TelemetryAction {
     },
     /// Clear the telemetry log.
     Clear,
+    /// Show aggregate usage stats from the telemetry log.
+    Stats,
 }
 
 /// Subcommands for `forge model`.
@@ -436,6 +439,44 @@ pub enum ModelAction {
     Use {
         /// The saved provider index or model name.
         target: String,
+    },
+    /// List saved providers.
+    List,
+}
+
+/// Subcommands for `forge session`.
+#[derive(Subcommand)]
+pub enum SessionAction {
+    /// List saved sessions with message and token counts.
+    List,
+    /// Show details for a session.
+    Show {
+        /// The session id.
+        id: String,
+    },
+    /// Delete a session.
+    Delete {
+        /// The session id.
+        id: String,
+    },
+    /// Rename a session.
+    Rename {
+        /// The session id.
+        id: String,
+        /// The new id.
+        new: String,
+    },
+    /// Export a session to a JSON file.
+    Export {
+        /// The session id.
+        id: String,
+        /// The output file path.
+        path: PathBuf,
+    },
+    /// Import a session from a JSON file.
+    Import {
+        /// The input file path.
+        path: PathBuf,
     },
 }
 
@@ -1163,6 +1204,13 @@ fn dispatch(cli: Cli) -> Result<()> {
                         }
                     }
                 }
+                "stats" => {
+                    let facts = memory.all();
+                    let total_chars: usize = facts.iter().map(|(k, v)| k.len() + v.len()).sum();
+                    println!("facts: {}", facts.len());
+                    println!("total chars: {total_chars}");
+                    println!("file: {}", path.display());
+                }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
                         "unknown action {other}"
@@ -1736,6 +1784,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Set { .. }) => "set",
                 Some(ConfigAction::Validate) => "validate",
                 Some(ConfigAction::Path) => "path",
+                Some(ConfigAction::Unset { .. }) => "unset",
             };
             wiring
                 .telemetry
@@ -1843,13 +1892,60 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Path) => {
                     println!("{}", crate::config::config_path()?.display());
                 }
+                Some(ConfigAction::Unset { key }) => {
+                    let path = crate::config::config_path()?;
+                    let mut config = config;
+                    match key.as_str() {
+                        "provider.model" => config.provider.model = None,
+                        "provider.base_url" => config.provider.base_url = None,
+                        "provider.api_key" => config.provider.api_key = None,
+                        "max_turns" => config.max_turns = None,
+                        "workspace" => config.workspace = None,
+                        "telemetry" => config.telemetry = true,
+                        other => {
+                            return Err(crate::error::Error::InvalidArgs(format!(
+                                "unknown config key {other}"
+                            )))
+                        }
+                    }
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("unset {key}");
+                }
             }
             Ok(())
         }
-        Command::Session { action, id, new } => {
+        Command::Session { action } => {
             let dir = crate::session::default_sessions_dir()?;
-            match action.as_str() {
-                "delete" => {
+            match action {
+                SessionAction::List => {
+                    let ids = crate::session::Session::list(&dir)?;
+                    if ids.is_empty() {
+                        println!("no sessions");
+                    } else {
+                        for sid in ids {
+                            if let Ok(session) = crate::session::Session::load(&dir, &sid) {
+                                println!(
+                                    "{sid}  {} message(s), ~{} token(s)",
+                                    session.message_count(),
+                                    session.token_usage()
+                                );
+                            } else {
+                                println!("{sid}");
+                            }
+                        }
+                    }
+                }
+                SessionAction::Show { id } => {
+                    let session = crate::session::Session::load(&dir, &id)?;
+                    println!("id: {}", session.id);
+                    println!("created: {}", session.created_at);
+                    println!("messages: {}", session.message_count());
+                    println!("tokens: ~{}", session.token_usage());
+                }
+                SessionAction::Delete { id } => {
                     let path = dir.join(format!("{id}.json"));
                     if path.exists() {
                         std::fs::remove_file(&path)?;
@@ -1858,10 +1954,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                         println!("no session {id}");
                     }
                 }
-                "rename" => {
-                    let new = new.ok_or_else(|| {
-                        crate::error::Error::InvalidArgs("rename needs a new id".into())
-                    })?;
+                SessionAction::Rename { id, new } => {
                     let old_path = dir.join(format!("{id}.json"));
                     let new_path = dir.join(format!("{new}.json"));
                     if old_path.exists() {
@@ -1871,10 +1964,24 @@ fn dispatch(cli: Cli) -> Result<()> {
                         println!("no session {id}");
                     }
                 }
-                other => {
-                    return Err(crate::error::Error::InvalidArgs(format!(
-                        "unknown session action {other}"
-                    )))
+                SessionAction::Export { id, path } => {
+                    let session = crate::session::Session::load(&dir, &id)?;
+                    let raw = session.export()?;
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, raw)?;
+                    println!("exported session {id} to {}", path.display());
+                }
+                SessionAction::Import { path } => {
+                    let raw = std::fs::read_to_string(&path)?;
+                    let session = crate::session::Session::import(&raw)?;
+                    session.save(&dir)?;
+                    println!(
+                        "imported session {} ({} messages)",
+                        session.id,
+                        session.message_count()
+                    );
                 }
             }
             Ok(())
@@ -1957,6 +2064,30 @@ fn dispatch(cli: Cli) -> Result<()> {
                 }
                 std::fs::write(&path, "")?;
                 println!("telemetry cleared");
+                Ok(())
+            }
+            TelemetryAction::Stats => {
+                let path = crate::telemetry::default_telemetry_path()?;
+                let raw = std::fs::read_to_string(&path).unwrap_or_default();
+                let mut counts: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
+                let mut total = 0usize;
+                for line in raw.lines() {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(event) = value.get("event").and_then(|e| e.as_str()) {
+                            *counts.entry(event.to_string()).or_insert(0) += 1;
+                            total += 1;
+                        }
+                    }
+                }
+                if total == 0 {
+                    println!("no telemetry events recorded");
+                } else {
+                    println!("total events: {total}");
+                    for (event, count) in &counts {
+                        println!("{event}: {count}");
+                    }
+                }
                 Ok(())
             }
         },
@@ -2089,6 +2220,28 @@ fn dispatch(cli: Cli) -> Result<()> {
                          forge plugin disable <name>   disable a plugin\n  \
                          forge plugin add <file>      add a plugin file"
                     );
+                }
+                "info" => {
+                    let name = arg.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("plugin name required".into())
+                    })?;
+                    let entry =
+                        registry
+                            .list()
+                            .iter()
+                            .find(|p| p.name == name)
+                            .ok_or_else(|| {
+                                crate::error::Error::Config(format!("unknown plugin {name}"))
+                            })?;
+                    println!("name: {}", entry.name);
+                    println!(
+                        "status: {}",
+                        if entry.enabled { "enabled" } else { "disabled" }
+                    );
+                    println!("tools ({}):", entry.tools.len());
+                    for tool in &entry.tools {
+                        println!("  - {tool}");
+                    }
                 }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
@@ -2897,6 +3050,21 @@ fn dispatch(cli: Cli) -> Result<()> {
                     "active model: {}",
                     config.provider.model.as_deref().unwrap_or("(none)")
                 );
+                Ok(())
+            }
+            ModelAction::List => {
+                let config = Config::load()?;
+                if config.saved_providers.is_empty() {
+                    println!("no saved providers");
+                } else {
+                    for (idx, provider) in config.saved_providers.iter().enumerate() {
+                        println!(
+                            "{idx}: {} ({})",
+                            provider.model.as_deref().unwrap_or("(no model)"),
+                            provider.base_url.as_deref().unwrap_or("(default)")
+                        );
+                    }
+                }
                 Ok(())
             }
         },
