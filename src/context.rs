@@ -1,6 +1,8 @@
 //! Context management: a token budget and a compactor that keeps the message
 //! list within bounds by folding the oldest messages into a summary.
 
+use std::sync::Arc;
+
 use crate::agent::Message;
 
 /// A rough token estimate: ~4 characters per token.
@@ -8,12 +10,63 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.chars().count() / 4
 }
 
+/// Summarizes a block of text. The heuristic version truncates; a provider
+/// version asks the model.
+pub trait Summarizer: Send + Sync {
+    fn summarize(&self, text: &str) -> String;
+}
+
+/// A heuristic summarizer: keeps a short prefix of each line.
+#[derive(Default)]
+pub struct HeuristicSummarizer;
+
+impl Summarizer for HeuristicSummarizer {
+    fn summarize(&self, text: &str) -> String {
+        let mut out = String::from("[summary of earlier conversation]\n");
+        for line in text.lines() {
+            let truncated: String = line.chars().take(20).collect();
+            out.push_str(&truncated);
+            out.push('\n');
+        }
+        out
+    }
+}
+
+/// A model-based summarizer that asks the provider to condense the text.
+pub struct ProviderSummarizer {
+    provider: Arc<dyn crate::agent::Provider>,
+}
+
+impl ProviderSummarizer {
+    pub fn new(provider: Arc<dyn crate::agent::Provider>) -> Self {
+        Self { provider }
+    }
+}
+
+impl Summarizer for ProviderSummarizer {
+    fn summarize(&self, text: &str) -> String {
+        let prompt = format!(
+            "Summarize the following conversation into a concise summary that \
+             preserves the key facts and decisions. Keep it under 200 words.\n\n{text}"
+        );
+        let messages = vec![
+            Message::System("You are a conversation summarizer.".into()),
+            Message::User(prompt),
+        ];
+        match self.provider.complete(&messages) {
+            Ok(reply) => reply.content,
+            Err(_) => HeuristicSummarizer.summarize(text),
+        }
+    }
+}
+
 /// Tracks a token budget and compacts the message list when it grows too large.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ContextManager {
     max_tokens: usize,
     /// Token count at which the oldest messages are folded into a summary.
     compact_threshold: usize,
+    summarizer: Arc<dyn Summarizer>,
 }
 
 impl ContextManager {
@@ -22,7 +75,14 @@ impl ContextManager {
         Self {
             max_tokens,
             compact_threshold,
+            summarizer: Arc::new(HeuristicSummarizer),
         }
+    }
+
+    /// Use a custom summarizer (e.g. a model-based one).
+    pub fn with_summarizer(mut self, summarizer: Arc<dyn Summarizer>) -> Self {
+        self.summarizer = summarizer;
+        self
     }
 
     /// Estimate the total tokens in a message list.
@@ -47,15 +107,12 @@ impl ContextManager {
         }
         // Keep the system prompt and the most recent half; fold the rest.
         let keep_from = (messages.len() / 2).max(1);
-        let mut summary = String::from("[summary of earlier conversation]\n");
+        let mut folded = String::new();
         for message in &messages[1..keep_from] {
-            let text = message_text(message);
-            // Bound each folded message so the summary is genuinely smaller than
-            // what it replaces. A real model-based summarizer can replace this.
-            let truncated: String = text.chars().take(20).collect();
-            summary.push_str(&truncated);
-            summary.push('\n');
+            folded.push_str(&message_text(message));
+            folded.push('\n');
         }
+        let summary = self.summarizer.summarize(&folded);
         // Replace the folded messages with the summary: keep the system prompt,
         // drop messages[1..keep_from], keep the tail.
         let tail = messages.split_off(keep_from);

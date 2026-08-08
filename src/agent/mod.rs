@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::context::ContextManager;
+use crate::context::{ContextManager, ProviderSummarizer};
 use crate::error::{Error, Result};
 use crate::hooks::{HookContext, HookDispatcher};
 use crate::permission::{Approver, Permission, Policy};
@@ -76,13 +76,16 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(provider: Box<dyn Provider>, registry: Registry, max_turns: usize) -> Self {
+        let provider = Arc::from(provider);
+        let context = ContextManager::new(100_000)
+            .with_summarizer(Arc::new(ProviderSummarizer::new(Arc::clone(&provider))));
         Self {
-            provider: Arc::from(provider),
+            provider,
             registry,
             max_turns,
             policy: Policy::new(),
             approver: None,
-            context: ContextManager::new(100_000),
+            context,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             hooks: HookDispatcher::new(),
         }

@@ -99,6 +99,9 @@ pub enum Command {
     Browser {
         /// The URL to open.
         url: String,
+        /// Evaluate a JavaScript expression in the opened page.
+        #[arg(long)]
+        eval: Option<String>,
     },
     /// Desktop control: `screenshot <path>`, `click <x> <y>`, `type <text>`.
     Desktop {
@@ -107,6 +110,8 @@ pub enum Command {
         /// Arguments for the action.
         args: Vec<String>,
     },
+    /// Write a working config plus sample workflow and cron files.
+    Setup,
     /// Write a sample config file to the default location.
     Init,
 }
@@ -303,10 +308,14 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("{output}");
             Ok(())
         }
-        Command::Browser { url } => {
+        Command::Browser { url, eval } => {
             let browser = crate::browser::Browser::launch()?;
             let target = browser.open(&url)?;
-            println!("opened {url} (target {target})");
+            println!("opened {url} (target {})", target.id);
+            if let Some(js) = eval {
+                let result = browser.evaluate(&target, &js)?;
+                println!("eval result: {result}");
+            }
             for tab in browser.list()? {
                 println!("tab: {tab}");
             }
@@ -343,6 +352,60 @@ fn dispatch(cli: Cli) -> Result<()> {
                     )))
                 }
             }
+            Ok(())
+        }
+        Command::Setup => {
+            // Config.
+            let config_path = crate::config::config_path()?;
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let config = r#"{
+  "workspace": ".",
+  "provider": {
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "api_key": ""
+  },
+  "max_turns": 10
+}
+"#;
+            std::fs::write(&config_path, config)?;
+            println!("wrote config: {}", config_path.display());
+
+            // Sample workflow.
+            let workspace = Config::load()?.workspace_root();
+            let forge_dir = workspace.join(".forge");
+            std::fs::create_dir_all(&forge_dir)?;
+            let workflow = r#"{
+  "name": "research",
+  "max_workers": 3,
+  "max_tokens": 100000,
+  "tasks": [
+    { "id": "discover", "prompt": "List the modules in this project.", "depends_on": [], "phase": "discover" },
+    { "id": "review", "prompt": "Review the core module for issues.", "depends_on": ["discover"], "phase": "review" },
+    { "id": "synthesize", "prompt": "Summarize the review findings.", "depends_on": ["review"], "phase": "synthesize" }
+  ]
+}
+"#;
+            std::fs::write(forge_dir.join("workflow.json"), workflow)?;
+            println!(
+                "wrote sample workflow: {}",
+                forge_dir.join("workflow.json").display()
+            );
+
+            // Sample cron.
+            let cron = r#"[
+  { "name": "daily-status", "interval_secs": 86400, "command": "git status --short" }
+]
+"#;
+            std::fs::write(forge_dir.join("cron.json"), cron)?;
+            println!(
+                "wrote sample cron: {}",
+                forge_dir.join("cron.json").display()
+            );
+
+            println!("\nNext: set provider.api_key (or FORGE_API_KEY), then run:\n  forge run \"hello\"\n  forge workflow .forge/workflow.json\n  forge cron .forge/cron.json");
             Ok(())
         }
         Command::Init => {

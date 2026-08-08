@@ -12,6 +12,7 @@ pub mod grep;
 pub mod list_directory;
 pub mod read_file;
 pub mod search;
+pub mod ssh;
 pub mod terminal;
 pub mod web_fetch;
 pub mod write_file;
@@ -129,6 +130,7 @@ impl Registry {
         registry.register(Box::new(apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(search::SearchTool::new()));
         registry.register(Box::new(terminal::TerminalTool::new()));
+        registry.register(Box::new(ssh::SshTool::new()));
         registry
     }
 }

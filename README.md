@@ -35,8 +35,14 @@ built to be simple, testable, and easy to extend.
 - **Cron/automations** — an interval-based job scheduler.
 - **Code/PR review** — heuristic diff review.
 - **MCP** — a minimal Model Context Protocol client over stdio.
-- **Browser automation** — CDP headless Chrome control.
+- **Browser automation** — CDP headless Chrome control, including WebSocket
+  `Runtime.evaluate`.
 - **Computer/desktop use** — screenshot + coordinate control (macOS).
+- **SSH** — run commands on a remote host.
+- **Model-based summarization** — context compaction asks the provider to
+  summarize, with a heuristic fallback.
+- **`forge setup`** — writes a working config plus sample workflow and cron
+  files so you can start immediately.
 - **Providers** — an OpenAI-compatible HTTP provider, plus a scriptable mock
   provider for tests and demos.
 - **Config** — a small JSON config file (`~/.config/forge/config.json`).
@@ -70,6 +76,9 @@ forge resume <session-id> "continue the work"
 
 # List saved sessions
 forge sessions
+
+# One-command setup: writes config + sample workflow + sample cron
+forge setup
 ```
 
 ### Configuration

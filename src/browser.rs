@@ -5,9 +5,16 @@
 
 use std::process::{Child, Command, Stdio};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
+
+/// A browser target (tab) with its DevTools WebSocket URL.
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub id: String,
+    pub ws_url: String,
+}
 
 /// A headless browser session.
 pub struct Browser {
@@ -59,8 +66,8 @@ impl Browser {
         })
     }
 
-    /// Open a URL in a new tab and return the target id.
-    pub fn open(&self, url: &str) -> Result<String> {
+    /// Open a URL in a new tab and return the target.
+    pub fn open(&self, url: &str) -> Result<Target> {
         let endpoint = format!("http://127.0.0.1:{}/json/new?{}", self.port, urlencode(url));
         let response = self
             .client
@@ -70,11 +77,49 @@ impl Browser {
         let value: Value = response
             .json()
             .map_err(|e| Error::Agent(format!("parse target: {e}")))?;
-        value
+        let id = value
             .get("id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| Error::Agent("no target id in response".into()))
+            .ok_or_else(|| Error::Agent("no target id in response".into()))?;
+        let ws_url = value
+            .get("webSocketDebuggerUrl")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| Error::Agent("no websocket url in response".into()))?;
+        Ok(Target { id, ws_url })
+    }
+
+    /// Evaluate a JavaScript expression in a target over the DevTools
+    /// WebSocket and return the result value.
+    pub fn evaluate(&self, target: &Target, expression: &str) -> Result<String> {
+        let (mut socket, _) = tungstenite::connect(&target.ws_url)
+            .map_err(|e| Error::Agent(format!("connect devtools: {e}")))?;
+        let request = json!({
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": { "expression": expression, "returnByValue": true }
+        });
+        let message = tungstenite::Message::Text(serde_json::to_string(&request)?);
+        socket
+            .send(message)
+            .map_err(|e| Error::Agent(format!("send evaluate: {e}")))?;
+        let reply = socket
+            .read()
+            .map_err(|e| Error::Agent(format!("read evaluate: {e}")))?;
+        let text = match reply {
+            tungstenite::Message::Text(t) => t.to_string(),
+            tungstenite::Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
+            _ => return Err(Error::Agent("unexpected devtools message".into())),
+        };
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|e| Error::Agent(format!("parse evaluate: {e}")))?;
+        value
+            .get("result")
+            .and_then(|r| r.get("result"))
+            .and_then(|r| r.get("value"))
+            .map(|v| v.to_string())
+            .ok_or_else(|| Error::Agent("no value in evaluate result".into()))
     }
 
     /// List the open targets (tabs).
