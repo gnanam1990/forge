@@ -272,6 +272,56 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
                 json!({ "total": total, "events": counts }).to_string(),
             ))
         }
+        ("GET", "/plugins") => {
+            let dir = config
+                .plugins_dir
+                .clone()
+                .unwrap_or_else(|| config.workspace_root().join(".forge").join("plugins"));
+            let state_path = dir.join("state.json");
+            let mut registry = crate::plugin::PluginRegistry::new(state_path);
+            registry.load_dir(&dir)?;
+            let plugins: Vec<serde_json::Value> = registry
+                .list()
+                .iter()
+                .map(|p| {
+                    json!({
+                        "name": p.name,
+                        "enabled": p.enabled,
+                        "tools": p.tools,
+                    })
+                })
+                .collect();
+            Ok((
+                200,
+                "application/json",
+                json!({ "plugins": plugins }).to_string(),
+            ))
+        }
+        ("POST", "/memory/forget") => {
+            let value: serde_json::Value = serde_json::from_str(&req.body)
+                .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
+            let key = value
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::InvalidArgs("body must be {\"key\": string}".into()))?;
+            let path = crate::memory::default_memory_path()?;
+            let mut memory = crate::memory::Memory::load(path)?;
+            let removed = memory.forget(key);
+            if removed {
+                memory.save()?;
+                Ok((
+                    200,
+                    "application/json",
+                    json!({ "ok": true, "key": key }).to_string(),
+                ))
+            } else {
+                Ok((
+                    404,
+                    "application/json",
+                    json!({ "error": format!("no fact named {key}") }).to_string(),
+                ))
+            }
+        }
         ("GET", _) => {
             // `GET /session/<id>`
             if req.path.starts_with("/session/") {
@@ -376,6 +426,10 @@ fn write_response(
 mod tests {
     use super::*;
 
+    /// Serializes tests that mutate process-global env vars (FORGE_*), since
+    /// Rust runs tests in parallel threads sharing the environment.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn routes_health() {
         let req = Request {
@@ -443,6 +497,7 @@ mod tests {
 
     #[test]
     fn memory_post_and_delete_roundtrip() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("FORGE_MEMORY", dir.path().join("memory.json"));
         let post = Request {
@@ -495,6 +550,7 @@ mod tests {
 
     #[test]
     fn routes_stats() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("FORGE_TELEMETRY", dir.path().join("t.jsonl"));
         std::fs::write(
@@ -517,6 +573,7 @@ mod tests {
 
     #[test]
     fn routes_session_by_id() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let session_dir = dir.path().join("sessions");
         let session = crate::session::Session::new("sess-1");
@@ -560,6 +617,7 @@ mod tests {
 
     #[test]
     fn tools_call_reads_a_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
         let config_path = dir.path().join("config.json");
@@ -590,5 +648,68 @@ mod tests {
             body: r#"{"tool":"does_not_exist","args":{}}"#.into(),
         };
         assert!(route(&req).is_err());
+    }
+
+    #[test]
+    fn routes_plugins() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let plugins_dir = dir.path().join(".forge/plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        std::fs::write(
+            plugins_dir.join("demo.json"),
+            r#"{"name":"demo","tools":[{"name":"greet","command":"echo","description":"greets"}]}"#,
+        )
+        .unwrap();
+        let config_path = dir.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"workspace":"{}","plugins_dir":"{}"}}"#,
+                dir.path().display(),
+                plugins_dir.display()
+            ),
+        )
+        .unwrap();
+        std::env::set_var("FORGE_CONFIG", config_path.display().to_string());
+        let req = Request {
+            method: "GET".into(),
+            path: "/plugins".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["plugins"][0]["name"], "demo");
+        std::env::remove_var("FORGE_CONFIG");
+    }
+
+    #[test]
+    fn memory_forget_roundtrip() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FORGE_MEMORY", dir.path().join("memory.json"));
+        let post = Request {
+            method: "POST".into(),
+            path: "/memory".into(),
+            body: r#"{"key":"lang","value":"rust"}"#.into(),
+        };
+        route(&post).unwrap();
+        let forget = Request {
+            method: "POST".into(),
+            path: "/memory/forget".into(),
+            body: r#"{"key":"lang"}"#.into(),
+        };
+        let (status, _, _) = route(&forget).unwrap();
+        assert_eq!(status, 200);
+        let get = Request {
+            method: "GET".into(),
+            path: "/memory".into(),
+            body: String::new(),
+        };
+        let (_, _, body) = route(&get).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["memory"].as_object().unwrap().is_empty());
+        std::env::remove_var("FORGE_MEMORY");
     }
 }

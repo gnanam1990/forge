@@ -31,6 +31,7 @@ struct App {
     scroll: usize,
     history: Vec<String>,
     history_index: Option<usize>,
+    model: String,
 }
 
 impl App {
@@ -39,6 +40,7 @@ impl App {
         session: Session,
         sessions_dir: std::path::PathBuf,
         telemetry: crate::telemetry::Telemetry,
+        model: String,
     ) -> Self {
         Self {
             messages: Vec::new(),
@@ -51,6 +53,7 @@ impl App {
             scroll: 0,
             history: Vec::new(),
             history_index: None,
+            model,
         }
     }
 
@@ -69,7 +72,10 @@ impl App {
             match prompt.as_str() {
                 "/help" => {
                     self.messages
-                        .push("commands: /help, /sessions, /clear, /exit".into());
+                        .push("commands: /help, /model, /sessions, /clear, /exit".into());
+                }
+                "/model" => {
+                    self.messages.push(format!("active model: {}", self.model));
                 }
                 "/sessions" => {
                     let ids = Session::list(&self.sessions_dir).unwrap_or_default();
@@ -147,7 +153,17 @@ pub fn run_chat(config: &Config, resume: Option<&str>) -> Result<()> {
             line.trim().eq_ignore_ascii_case("y")
         }))
         .with_hooks(wiring.hooks);
-    let mut app = App::new(agent, session, sessions_dir, wiring.telemetry);
+    let mut app = App::new(
+        agent,
+        session,
+        sessions_dir,
+        wiring.telemetry,
+        config
+            .provider
+            .model
+            .clone()
+            .unwrap_or_else(|| "(none)".into()),
+    );
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

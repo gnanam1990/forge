@@ -9,6 +9,7 @@ pub mod bash;
 pub mod copy_file;
 pub mod delete_file;
 pub mod edit_file;
+pub mod get_cwd;
 pub mod get_env;
 pub mod git;
 pub mod git_branch;
@@ -148,6 +149,7 @@ impl Registry {
         registry.register(Box::new(git_branch::GitBranchTool::new()));
         registry.register(Box::new(git_show::GitShowTool::new()));
         registry.register(Box::new(get_env::GetEnvTool::new()));
+        registry.register(Box::new(get_cwd::GetCwdTool::new()));
         registry.register(Box::new(apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(search::SearchTool::new()));
         registry.register(Box::new(terminal::TerminalTool::new()));

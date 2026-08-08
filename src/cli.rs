@@ -55,7 +55,11 @@ pub enum Command {
     /// Print a short usage guide.
     Docs,
     /// Show usage stats from telemetry.
-    Stats,
+    Stats {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show environment information.
     Env {
         /// Output as JSON.
@@ -539,6 +543,11 @@ pub enum StashAction {
         /// The stash index (default 0).
         index: Option<usize>,
     },
+    /// Drop a stash by index.
+    Drop {
+        /// The stash index (default 0).
+        index: Option<usize>,
+    },
 }
 
 /// Subcommands for `forge git tag`.
@@ -584,6 +593,13 @@ pub enum RemoteAction {
         /// The new remote name.
         new: String,
     },
+    /// Set a remote's URL.
+    SetUrl {
+        /// The remote name.
+        name: String,
+        /// The new URL.
+        url: String,
+    },
 }
 
 /// Subcommands for `forge git`.
@@ -609,9 +625,17 @@ pub enum GitAction {
         /// Include commits from all branches.
         #[arg(long)]
         all: bool,
+        /// Custom output format (e.g. "%h %s").
+        #[arg(long)]
+        format: Option<String>,
     },
     /// List branches.
     Branch,
+    /// Delete a branch: `git branch-delete <name>`.
+    BranchDelete {
+        /// The branch name.
+        name: String,
+    },
     /// Create and switch to a new branch: `git branch-create <name>`.
     BranchCreate {
         /// The new branch name.
@@ -695,6 +719,9 @@ pub enum GitAction {
         /// Show diff statistics.
         #[arg(long)]
         stat: bool,
+        /// List only the names of changed files.
+        #[arg(long)]
+        name_only: bool,
     },
     /// Merge a branch into the current branch: `git merge <branch>`.
     Merge {
@@ -2101,6 +2128,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                             .map(serde_json::Value::String)
                             .unwrap_or(serde_json::Value::Null),
                         "telemetry" => serde_json::Value::Bool(config.telemetry),
+                        "saved_providers" => {
+                            serde_json::Value::Number((config.saved_providers.len() as u64).into())
+                        }
                         other => {
                             return Err(crate::error::Error::InvalidArgs(format!(
                                 "unknown config key {other}"
@@ -2739,10 +2769,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
-        Command::Stats => {
+        Command::Stats { json } => {
             let path = crate::telemetry::default_telemetry_path()?;
-            let mut counts: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
+            let mut counts: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
             if let Ok(raw) = std::fs::read_to_string(&path) {
                 for line in raw.lines() {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
@@ -2752,6 +2782,17 @@ fn dispatch(cli: Cli) -> Result<()> {
                         }
                     }
                 }
+            }
+            if json {
+                let total: usize = counts.values().sum();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "total": total,
+                        "events": counts,
+                    }))?
+                );
+                return Ok(());
             }
             if counts.is_empty() {
                 println!("no usage data yet");
@@ -3017,6 +3058,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     grep,
                     since,
                     all,
+                    format,
                 } => {
                     let limit_str = limit.to_string();
                     let mut args: Vec<String> = vec![
@@ -3030,6 +3072,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     if stat {
                         args.push("--stat".into());
+                    }
+                    if let Some(format) = format {
+                        args.push(format!("--format={format}"));
                     }
                     if let Some(author) = author {
                         args.push("--author".into());
@@ -3060,6 +3105,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                         .current_dir(&ws)
                         .output()?;
                     println!("{}", String::from_utf8_lossy(&out.stdout));
+                }
+                GitAction::BranchDelete { name } => {
+                    let status = std::process::Command::new("git")
+                        .args(["branch", "-d", &name])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git branch -d {name} failed with {status}"
+                        )));
+                    }
+                    println!("deleted branch {name}");
                 }
                 GitAction::Remote { action } => match action {
                     RemoteAction::Show => {
@@ -3109,6 +3166,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                             )));
                         }
                         println!("renamed remote {old} to {new}");
+                    }
+                    RemoteAction::SetUrl { name, url } => {
+                        let status = std::process::Command::new("git")
+                            .args(["remote", "set-url", &name, &url])
+                            .current_dir(&ws)
+                            .status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git remote set-url {name} failed with {status}"
+                            )));
+                        }
+                        println!("set url for remote {name}");
                     }
                 },
                 GitAction::Status { porcelain } => {
@@ -3201,6 +3270,20 @@ fn dispatch(cli: Cli) -> Result<()> {
                             )));
                         }
                         println!("stash applied");
+                    }
+                    StashAction::Drop { index } => {
+                        let mut cmd = std::process::Command::new("git");
+                        cmd.args(["stash", "drop"]).current_dir(&ws);
+                        if let Some(idx) = index {
+                            cmd.arg(format!("stash@{{{idx}}}"));
+                        }
+                        let status = cmd.status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git stash drop failed with {status}"
+                            )));
+                        }
+                        println!("stash dropped");
                     }
                 },
                 GitAction::Blame { file } => {
@@ -3367,11 +3450,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     println!("reset done");
                 }
-                GitAction::Show { reference, stat } => {
+                GitAction::Show {
+                    reference,
+                    stat,
+                    name_only,
+                } => {
                     let mut cmd = std::process::Command::new("git");
                     cmd.arg("show").current_dir(&ws);
                     if stat {
                         cmd.arg("--stat");
+                    }
+                    if name_only {
+                        cmd.arg("--name-only");
                     }
                     cmd.arg(&reference);
                     let out = cmd.output()?;
