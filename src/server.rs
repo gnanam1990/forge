@@ -100,6 +100,37 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
             "application/json",
             json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }).to_string(),
         )),
+        ("GET", "/version") => Ok((
+            200,
+            "application/json",
+            json!({ "version": env!("CARGO_PKG_VERSION") }).to_string(),
+        )),
+        ("POST", "/tools/call") => {
+            let body: serde_json::Value = serde_json::from_str(&req.body)
+                .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
+            let tool_name = body
+                .get("tool")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::InvalidArgs("body must be {\"tool\": string, ...}".into()))?;
+            let args = body.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let wiring = crate::wiring::build_wiring(&config)?;
+            let tool = wiring
+                .registry
+                .get(tool_name)
+                .ok_or_else(|| Error::InvalidArgs(format!("no tool named {tool_name}")))?;
+            let ctx = crate::tools::ToolContext::new(config.workspace_root());
+            let result = crate::tools::Tool::run(tool, &args, &ctx)?;
+            Ok((
+                200,
+                "application/json",
+                json!({
+                    "ok": result.ok,
+                    "output": result.output,
+                    "error": result.error,
+                })
+                .to_string(),
+            ))
+        }
         ("GET", "/tools") => {
             let names = crate::tools::Registry::builtin().names();
             Ok((
@@ -512,5 +543,52 @@ mod tests {
         };
         let (status, _, _) = route(&req).unwrap();
         assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn routes_version() {
+        let req = Request {
+            method: "GET".into(),
+            path: "/version".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.get("version").is_some());
+    }
+
+    #[test]
+    fn tools_call_reads_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let config_path = dir.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            format!(r#"{{"workspace":"{}"}}"#, dir.path().display()),
+        )
+        .unwrap();
+        std::env::set_var("FORGE_CONFIG", config_path.display().to_string());
+        let req = Request {
+            method: "POST".into(),
+            path: "/tools/call".into(),
+            body: r#"{"tool":"read_file","args":{"path":"a.txt"}}"#.into(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(v["output"].as_str().unwrap().contains("hello"));
+        std::env::remove_var("FORGE_CONFIG");
+    }
+
+    #[test]
+    fn tools_call_unknown_tool_is_error() {
+        let req = Request {
+            method: "POST".into(),
+            path: "/tools/call".into(),
+            body: r#"{"tool":"does_not_exist","args":{}}"#.into(),
+        };
+        assert!(route(&req).is_err());
     }
 }
