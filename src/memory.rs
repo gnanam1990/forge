@@ -58,6 +58,11 @@ impl Memory {
         self.facts.clear();
     }
 
+    /// Remove a single fact by key. Returns true if it existed.
+    pub fn forget(&mut self, key: &str) -> bool {
+        self.facts.remove(key).is_some()
+    }
+
     /// Persist to the configured path.
     pub fn save(&self) -> Result<()> {
         if self.path.as_os_str().is_empty() {
@@ -233,5 +238,16 @@ mod tests {
         assert_eq!(hits[0].0, "lang");
         let hits = memory.search("nope");
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn forget_removes_a_single_fact() {
+        let mut memory = Memory::new();
+        memory.remember("lang", "rust");
+        memory.remember("editor", "vim");
+        assert!(memory.forget("lang"));
+        assert_eq!(memory.recall("lang"), None);
+        assert_eq!(memory.recall("editor"), Some("vim"));
+        assert!(!memory.forget("missing"));
     }
 }

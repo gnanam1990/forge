@@ -49,10 +49,8 @@ pub enum Command {
     Models,
     /// Show or set the provider: `provider [show|set <model>]`.
     Provider {
-        /// Action: show | set.
-        action: Option<String>,
-        /// Model to set (for `set`).
-        model: Option<String>,
+        #[command(subcommand)]
+        action: ProviderAction,
     },
     /// Print a short usage guide.
     Docs,
@@ -412,6 +410,8 @@ pub enum ConfigAction {
         /// The config key (e.g. provider.model, max_turns).
         key: String,
     },
+    /// Show the resolved build/test/lint/format/check commands for the workspace.
+    Commands,
 }
 
 /// Subcommands for `forge telemetry`.
@@ -430,6 +430,8 @@ pub enum TelemetryAction {
     Clear,
     /// Show aggregate usage stats from the telemetry log.
     Stats,
+    /// Print the path to the telemetry log.
+    Path,
 }
 
 /// Subcommands for `forge model`.
@@ -442,6 +444,34 @@ pub enum ModelAction {
     },
     /// List saved providers.
     List,
+}
+
+/// Subcommands for `forge provider`.
+#[derive(Subcommand)]
+pub enum ProviderAction {
+    /// Show the active provider.
+    Show,
+    /// Set the active model.
+    Set {
+        /// The model to set.
+        model: String,
+    },
+    /// List saved providers.
+    List,
+    /// Add a saved provider.
+    Add {
+        /// Optional provider name.
+        name: Option<String>,
+        /// The model.
+        model: String,
+        /// Optional base URL.
+        base_url: Option<String>,
+    },
+    /// Remove a saved provider by index or model name.
+    Remove {
+        /// The provider index or model name.
+        target: String,
+    },
 }
 
 /// Subcommands for `forge session`.
@@ -477,6 +507,25 @@ pub enum SessionAction {
     Import {
         /// The input file path.
         path: PathBuf,
+    },
+}
+
+/// Subcommands for `forge git remote`.
+#[derive(Subcommand)]
+pub enum RemoteAction {
+    /// Show the configured remotes.
+    Show,
+    /// Add a remote.
+    Add {
+        /// The remote name.
+        name: String,
+        /// The remote URL.
+        url: String,
+    },
+    /// Remove a remote.
+    Remove {
+        /// The remote name.
+        name: String,
     },
 }
 
@@ -523,8 +572,11 @@ pub enum GitAction {
         /// The tag message.
         message: Option<String>,
     },
-    /// Show the configured remotes.
-    Remote,
+    /// Manage remotes: `remote` (show), `remote add <name> <url>`, `remote remove <name>`.
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
     /// Show the working tree status.
     Status,
     /// Stage files: `git add <file>...`.
@@ -577,6 +629,17 @@ pub enum GitAction {
         /// The branch to merge.
         branch: String,
     },
+    /// Checkout a branch or commit: `git checkout <ref>`.
+    Checkout {
+        /// The branch or commit to check out.
+        reference: String,
+    },
+    /// Remove untracked files: `git clean [-f]`.
+    Clean {
+        /// Force removal (required by git).
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Subcommands for `forge sandbox`.
@@ -614,6 +677,11 @@ pub enum McpAction {
     List,
     /// Remove an MCP server from the config: `mcp remove <name>`.
     Remove {
+        /// The server name.
+        name: String,
+    },
+    /// Test a connection to an MCP server and list its tools.
+    Test {
         /// The server name.
         name: String,
     },
@@ -1211,6 +1279,17 @@ fn dispatch(cli: Cli) -> Result<()> {
                     println!("total chars: {total_chars}");
                     println!("file: {}", path.display());
                 }
+                "remove" => {
+                    let key =
+                        key.ok_or_else(|| crate::error::Error::InvalidArgs("key required".into()))?;
+                    if memory.recall(&key).is_some() {
+                        memory.forget(&key);
+                        memory.save()?;
+                        println!("removed {key}");
+                    } else {
+                        println!("no fact named {key}");
+                    }
+                }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
                         "unknown action {other}"
@@ -1346,6 +1425,24 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                     println!("removed MCP server {name}");
+                }
+                Ok(())
+            }
+            McpAction::Test { name } => {
+                let config = Config::load()?;
+                let server = config
+                    .mcp_servers
+                    .iter()
+                    .find(|s| s.name == name)
+                    .ok_or_else(|| {
+                        crate::error::Error::InvalidArgs(format!("no MCP server named {name}"))
+                    })?;
+                let args: Vec<&str> = server.args.iter().map(String::as_str).collect();
+                let mut client = crate::mcp::McpClient::connect(&server.command, &args)?;
+                let tools = client.list_tools()?;
+                println!("MCP server {name} OK — {} tool(s):", tools.len());
+                for tool in &tools {
+                    println!("  - {tool}");
                 }
                 Ok(())
             }
@@ -1785,6 +1882,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Validate) => "validate",
                 Some(ConfigAction::Path) => "path",
                 Some(ConfigAction::Unset { .. }) => "unset",
+                Some(ConfigAction::Commands) => "commands",
             };
             wiring
                 .telemetry
@@ -1913,6 +2011,12 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                     println!("unset {key}");
+                }
+                Some(ConfigAction::Commands) => {
+                    let ws = config.workspace_root();
+                    for step in ["build", "test", "lint", "format", "check"] {
+                        println!("{step}: {}", config.commands.resolve(step, &ws));
+                    }
                 }
             }
             Ok(())
@@ -2088,6 +2192,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                         println!("{event}: {count}");
                     }
                 }
+                Ok(())
+            }
+            TelemetryAction::Path => {
+                println!("{}", crate::telemetry::default_telemetry_path()?.display());
                 Ok(())
             }
         },
@@ -2316,11 +2424,21 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Provider { action, model } => {
+        Command::Provider { action } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            match action.as_deref().unwrap_or("show") {
-                "show" => {
+            let action_name = match &action {
+                ProviderAction::Show => "show",
+                ProviderAction::Set { .. } => "set",
+                ProviderAction::List => "list",
+                ProviderAction::Add { .. } => "add",
+                ProviderAction::Remove { .. } => "remove",
+            };
+            wiring
+                .telemetry
+                .record("provider", serde_json::json!({ "action": action_name }))?;
+            match action {
+                ProviderAction::Show => {
                     println!(
                         "base_url: {}",
                         config.provider.base_url.as_deref().unwrap_or("(default)")
@@ -2338,9 +2456,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                         }
                     );
                 }
-                "set" => {
-                    let model = model
-                        .ok_or_else(|| crate::error::Error::InvalidArgs("model required".into()))?;
+                ProviderAction::Set { model } => {
                     let path = crate::config::config_path()?;
                     let mut config = config;
                     config.provider.model = Some(model.clone());
@@ -2350,7 +2466,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                     println!("set model to {model}");
                 }
-                "list" => {
+                ProviderAction::List => {
                     println!(
                         "active: {}",
                         config.provider.model.as_deref().unwrap_or("(none)")
@@ -2363,30 +2479,55 @@ fn dispatch(cli: Cli) -> Result<()> {
                         );
                     }
                 }
-                "add" => {
-                    let model = model
-                        .ok_or_else(|| crate::error::Error::InvalidArgs("model required".into()))?;
+                ProviderAction::Add {
+                    name,
+                    model,
+                    base_url,
+                } => {
                     let path = crate::config::config_path()?;
                     let mut config = config;
                     config.saved_providers.push(crate::config::ProviderConfig {
                         model: Some(model.clone()),
+                        base_url: base_url.clone(),
                         ..Default::default()
                     });
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
-                    println!("added provider {model}");
+                    println!(
+                        "added provider {}{}",
+                        name.as_deref().unwrap_or(&model),
+                        base_url
+                            .as_deref()
+                            .map(|u| format!(" ({u})"))
+                            .unwrap_or_default()
+                    );
                 }
-                other => {
-                    return Err(crate::error::Error::InvalidArgs(format!(
-                        "unknown provider action {other}"
-                    )))
+                ProviderAction::Remove { target } => {
+                    let path = crate::config::config_path()?;
+                    let mut config = config;
+                    let before = config.saved_providers.len();
+                    if let Ok(idx) = target.parse::<usize>() {
+                        if idx < config.saved_providers.len() {
+                            config.saved_providers.remove(idx);
+                        }
+                    } else {
+                        config
+                            .saved_providers
+                            .retain(|p| p.model.as_deref() != Some(target.as_str()));
+                    }
+                    if config.saved_providers.len() == before {
+                        println!("no saved provider {target}");
+                    } else {
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                        println!("removed provider {target}");
+                    }
                 }
             }
-            wiring
-                .telemetry
-                .record("provider", serde_json::json!({ "action": action }))?;
             Ok(())
         }
         Command::Docs => {
@@ -2689,18 +2830,44 @@ fn dispatch(cli: Cli) -> Result<()> {
                         .output()?;
                     println!("{}", String::from_utf8_lossy(&out.stdout));
                 }
-                GitAction::Remote => {
-                    let out = std::process::Command::new("git")
-                        .args(["remote", "-v"])
-                        .current_dir(&ws)
-                        .output()?;
-                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-                    if text.trim().is_empty() {
-                        println!("no remotes configured");
-                    } else {
-                        println!("{text}");
+                GitAction::Remote { action } => match action {
+                    RemoteAction::Show => {
+                        let out = std::process::Command::new("git")
+                            .args(["remote", "-v"])
+                            .current_dir(&ws)
+                            .output()?;
+                        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                        if text.trim().is_empty() {
+                            println!("no remotes configured");
+                        } else {
+                            println!("{text}");
+                        }
                     }
-                }
+                    RemoteAction::Add { name, url } => {
+                        let status = std::process::Command::new("git")
+                            .args(["remote", "add", &name, &url])
+                            .current_dir(&ws)
+                            .status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git remote add {name} failed with {status}"
+                            )));
+                        }
+                        println!("added remote {name}");
+                    }
+                    RemoteAction::Remove { name } => {
+                        let status = std::process::Command::new("git")
+                            .args(["remote", "remove", &name])
+                            .current_dir(&ws)
+                            .status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git remote remove {name} failed with {status}"
+                            )));
+                        }
+                        println!("removed remote {name}");
+                    }
+                },
                 GitAction::Status => {
                     let out = std::process::Command::new("git")
                         .args(["status", "--short"])
@@ -2922,6 +3089,34 @@ fn dispatch(cli: Cli) -> Result<()> {
                         )));
                     }
                     println!("merged {branch}");
+                }
+                GitAction::Checkout { reference } => {
+                    let status = std::process::Command::new("git")
+                        .args(["checkout", &reference])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git checkout {reference} failed with {status}"
+                        )));
+                    }
+                    println!("checked out {reference}");
+                }
+                GitAction::Clean { force } => {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.arg("clean").current_dir(&ws);
+                    if force {
+                        cmd.arg("-f");
+                    } else {
+                        cmd.arg("-n");
+                    }
+                    let out = cmd.output()?;
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        println!("nothing to clean");
+                    } else {
+                        println!("{text}");
+                    }
                 }
             }
             Ok(())
