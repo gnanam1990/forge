@@ -38,7 +38,12 @@ built to be simple, testable, and easy to extend.
 - **Code/PR review** — heuristic diff review, plus a model-based reviewer with
   heuristic fallback.
 - **MCP** — a Model Context Protocol client over stdio, with MCP tools
-  registered into the agent's tool registry, plus resources and prompts support.
+  registered into the agent's tool registry, plus resources, prompts, ping,
+  notifications, and sampling support.
+- **`forge config`** — prints the current config with the API key redacted.
+- **`forge plugins`** — lists plugins loaded from the plugins directory.
+- **Session listing** — `forge sessions` shows message counts and timestamps.
+- **Search index invalidation** — the code index rebuilds when sources change.
 - **Plugins** — a plugin bundle system, plus loading command-backed plugins
   from a directory of JSON files.
 - **Telemetry** — a minimal usage tracker that appends JSON events to a file.

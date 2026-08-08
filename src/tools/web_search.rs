@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::permission::Permission;
 
 /// Cap on how many results are returned.
-const MAX_RESULTS: usize = 8;
+const MAX_RESULTS: usize = 10;
 
 #[derive(Default)]
 pub struct WebSearchTool;
@@ -52,6 +52,11 @@ impl Tool for WebSearchTool {
         if let Some(answer) = value.get("AbstractText").and_then(Value::as_str) {
             if !answer.is_empty() {
                 lines.push(format!("abstract: {answer}"));
+            }
+        }
+        if let Some(definition) = value.get("Definition").and_then(Value::as_str) {
+            if !definition.is_empty() {
+                lines.push(format!("definition: {definition}"));
             }
         }
         if let Some(related) = value.get("RelatedTopics").and_then(Value::as_array) {

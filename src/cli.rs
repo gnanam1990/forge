@@ -125,6 +125,10 @@ pub enum Command {
     Doctor,
     /// Print version, tools, and config summary.
     Info,
+    /// Print the current config (with the API key redacted).
+    Config,
+    /// List plugins loaded from the configured plugins directory.
+    Plugins,
     /// Set the session effort posture: `effort <auto|balanced|thorough|zeromaxing>`.
     Effort {
         /// The effort level.
@@ -274,7 +278,15 @@ fn dispatch(cli: Cli) -> Result<()> {
                 println!("no saved sessions");
             } else {
                 for id in ids {
-                    println!("{id}");
+                    if let Ok(session) = crate::session::Session::load(&dir, &id) {
+                        println!(
+                            "{id}\t{} messages\tcreated {}",
+                            session.message_count(),
+                            session.created_at
+                        );
+                    } else {
+                        println!("{id}");
+                    }
                 }
             }
             Ok(())
@@ -551,6 +563,32 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
             println!("tools: {}", registry.names().len());
             println!("sessions: {}", sessions.len());
+            Ok(())
+        }
+        Command::Config => {
+            let config = Config::load()?;
+            let mut redacted = config.clone();
+            if let Some(key) = redacted.provider.api_key.as_mut() {
+                if !key.is_empty() {
+                    *key = "***".to_string();
+                }
+            }
+            println!("{}", serde_json::to_string_pretty(&redacted)?);
+            Ok(())
+        }
+        Command::Plugins => {
+            let config = Config::load()?;
+            let mut registry = Registry::builtin();
+            let dir = config
+                .plugins_dir
+                .clone()
+                .unwrap_or_else(|| config.workspace_root().join(".forge").join("plugins"));
+            let count = crate::plugin::load_plugins_from_dir(&dir, &mut registry)?;
+            if count == 0 {
+                println!("no plugins loaded from {}", dir.display());
+            } else {
+                println!("loaded {count} plugin tool(s) from {}", dir.display());
+            }
             Ok(())
         }
         Command::Effort { level } => {

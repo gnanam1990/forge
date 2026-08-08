@@ -18,7 +18,6 @@ use crate::agent::{http::HttpProvider, Agent};
 use crate::config::Config;
 use crate::error::Result;
 use crate::session::{default_sessions_dir, Session};
-use crate::tools::Registry;
 
 /// The TUI application state.
 struct App {
@@ -28,10 +27,16 @@ struct App {
     agent: Agent,
     session: Session,
     sessions_dir: std::path::PathBuf,
+    telemetry: crate::telemetry::Telemetry,
 }
 
 impl App {
-    fn new(agent: Agent, session: Session, sessions_dir: std::path::PathBuf) -> Self {
+    fn new(
+        agent: Agent,
+        session: Session,
+        sessions_dir: std::path::PathBuf,
+        telemetry: crate::telemetry::Telemetry,
+    ) -> Self {
         Self {
             messages: Vec::new(),
             input: String::new(),
@@ -39,6 +44,7 @@ impl App {
             agent,
             session,
             sessions_dir,
+            telemetry,
         }
     }
 
@@ -53,12 +59,19 @@ impl App {
         self.status = "running…".into();
         match self.agent.run_into(&mut self.session.messages, &prompt) {
             Ok(outcome) => {
-                self.messages.push(outcome.final_text);
+                self.messages.push(outcome.final_text.clone());
                 self.status = format!(
                     "{} turn(s), {} tool call(s)",
                     outcome.turns, outcome.tool_calls
                 );
                 let _ = self.session.save(&self.sessions_dir);
+                let _ = self.telemetry.record(
+                    "chat",
+                    serde_json::json!({
+                        "turns": outcome.turns,
+                        "tool_calls": outcome.tool_calls,
+                    }),
+                );
             }
             Err(e) => {
                 self.messages.push(format!("error: {e}"));
@@ -82,16 +95,17 @@ pub fn run_chat(config: &Config) -> Result<()> {
             .unwrap_or(0)
     );
     let session = Session::new(&id);
-    let agent = Agent::new(Box::new(provider), Registry::builtin(), turns).with_approver(Box::new(
-        |tool| {
+    let wiring = crate::wiring::build_wiring(config)?;
+    let agent = Agent::new(Box::new(provider), wiring.registry, turns)
+        .with_approver(Box::new(|tool| {
             print!("allow {tool}? [y/N] ");
             let _ = io::stdout().flush();
             let mut line = String::new();
             let _ = io::stdin().read_line(&mut line);
             line.trim().eq_ignore_ascii_case("y")
-        },
-    ));
-    let mut app = App::new(agent, session, sessions_dir);
+        }))
+        .with_hooks(wiring.hooks);
+    let mut app = App::new(agent, session, sessions_dir, wiring.telemetry);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

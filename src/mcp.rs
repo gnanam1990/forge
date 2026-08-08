@@ -159,6 +159,39 @@ impl McpClient {
             .filter_map(|p| p.get("name").and_then(Value::as_str).map(str::to_string))
             .collect())
     }
+
+    /// Ping the server to check it is alive.
+    pub fn ping(&mut self) -> Result<()> {
+        self.request("ping", json!({}))?;
+        Ok(())
+    }
+
+    /// Send a notification (no response expected).
+    pub fn send_notification(&mut self, method: &str, params: Value) -> Result<()> {
+        let notification = json!({ "jsonrpc": "2.0", "method": method, "params": params });
+        let mut line = serde_json::to_string(&notification)?;
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes())?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    /// Request a model sample from the server (MCP sampling).
+    pub fn sample(&mut self, prompt: &str) -> Result<String> {
+        let result = self.request(
+            "sampling/createMessage",
+            json!({
+                "messages": [{ "role": "user", "content": { "type": "text", "text": prompt } }],
+                "maxTokens": 1000
+            }),
+        )?;
+        result
+            .get("content")
+            .and_then(|c| c.get("text"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| Error::Provider("no sample text".into()))
+    }
 }
 
 impl Drop for McpClient {

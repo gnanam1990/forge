@@ -138,14 +138,16 @@ impl Tool for SearchTool {
 
     fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {
         let query = string_arg(args, "query")?;
-        // Use a persistent index cached under the workspace, rebuilt only when
-        // the cache is missing.
+        // Use a persistent index cached under the workspace, rebuilt when the
+        // source fingerprint changes.
         let cache = ctx.workspace_root.join(".forge").join("index.json");
+        let fingerprint = fingerprint(&ctx.workspace_root);
         let index = match CodeIndex::load(&cache) {
-            Some(index) => index,
-            None => {
+            Some(index) if index_fingerprint(&cache) == fingerprint => index,
+            _ => {
                 let index = CodeIndex::build(&ctx.workspace_root);
                 let _ = index.save(&cache);
+                let _ = std::fs::write(cache.with_extension("fp"), fingerprint);
                 index
             }
         };
@@ -160,6 +162,33 @@ impl Tool for SearchTool {
         }
         Ok(ToolResult::ok(files.join("\n")))
     }
+}
+
+/// A simple fingerprint of a workspace: the sum of file sizes and mtimes.
+fn fingerprint(root: &std::path::Path) -> String {
+    let mut total: u128 = 0;
+    for entry in WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() {
+            if let Ok(meta) = entry.metadata() {
+                total = total.wrapping_add(meta.len() as u128);
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(d) = modified.duration_since(std::time::UNIX_EPOCH) {
+                        total = total.wrapping_add(d.as_nanos());
+                    }
+                }
+            }
+        }
+    }
+    format!("{total:x}")
+}
+
+/// Read the stored fingerprint for a cache file.
+fn index_fingerprint(cache: &std::path::Path) -> String {
+    std::fs::read_to_string(cache.with_extension("fp")).unwrap_or_default()
 }
 
 #[cfg(test)]
