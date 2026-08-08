@@ -27,6 +27,9 @@ pub enum Command {
         /// Read the prompt from a file instead of the argument.
         #[arg(long)]
         file: Option<PathBuf>,
+        /// Resume a saved session by id.
+        #[arg(long)]
+        resume: Option<String>,
         /// Override the workspace root.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -168,7 +171,11 @@ pub enum Command {
     /// Write a working config plus sample workflow and cron files.
     Setup,
     /// Check the environment and report what is available.
-    Doctor,
+    Doctor {
+        /// Attempt to fix config issues.
+        #[arg(long)]
+        fix: bool,
+    },
     /// Print version, tools, and config summary.
     Info,
     /// Print the current config (with the API key redacted).
@@ -180,13 +187,19 @@ pub enum Command {
         /// The value.
         value: String,
     },
-    /// Manage sessions: `session <delete> <id>`.
+    /// Manage sessions: `session <delete|rename> <id> [new]`.
     Session {
-        /// Action: delete.
+        /// Action: delete | rename.
         action: String,
         /// The session id.
         id: String,
+        /// New id (for rename).
+        new: Option<String>,
     },
+    /// Check for updates against the remote.
+    Update,
+    /// View the telemetry log.
+    Log,
     /// Toggle telemetry: `telemetry <on|off>`.
     Telemetry {
         /// on or off.
@@ -710,10 +723,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("\nNext: set provider.api_key (or FORGE_API_KEY), then run:\n  forge run \"hello\"\n  forge workflow .forge/workflow.json\n  forge cron .forge/cron.json");
             Ok(())
         }
-        Command::Doctor => {
+        Command::Doctor { fix } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            wiring.telemetry.record("doctor", serde_json::json!({}))?;
+            wiring
+                .telemetry
+                .record("doctor", serde_json::json!({ "fix": fix }))?;
             let mut ok = true;
             let mut check = |name: &str, pass: bool, detail: &str| {
                 println!("[{}] {name}: {detail}", if pass { "ok" } else { "MISSING" });
@@ -744,6 +759,33 @@ fn dispatch(cli: Cli) -> Result<()> {
                 println!("\nall checks passed");
             } else {
                 println!("\nsome checks failed — see above");
+            }
+            if fix {
+                // Attempt to fix config issues: write a config if none exists.
+                let path = crate::config::config_path()?;
+                if !path.exists() {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    let sample = r#"{
+  "workspace": ".",
+  "provider": {
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "api_key": ""
+  },
+  "max_turns": 10,
+  "mcp_servers": [],
+  "plugins_dir": ".forge/plugins",
+  "hooks": [],
+  "telemetry": true
+}
+"#;
+                    std::fs::write(&path, sample)?;
+                    println!("wrote a default config to {}", path.display());
+                } else {
+                    println!("config already exists at {}", path.display());
+                }
             }
             Ok(())
         }
@@ -800,7 +842,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("set {key} = {value}");
             Ok(())
         }
-        Command::Session { action, id } => {
+        Command::Session { action, id, new } => {
             let dir = crate::session::default_sessions_dir()?;
             match action.as_str() {
                 "delete" => {
@@ -812,11 +854,57 @@ fn dispatch(cli: Cli) -> Result<()> {
                         println!("no session {id}");
                     }
                 }
+                "rename" => {
+                    let new = new.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("rename needs a new id".into())
+                    })?;
+                    let old_path = dir.join(format!("{id}.json"));
+                    let new_path = dir.join(format!("{new}.json"));
+                    if old_path.exists() {
+                        std::fs::rename(&old_path, &new_path)?;
+                        println!("renamed session {id} to {new}");
+                    } else {
+                        println!("no session {id}");
+                    }
+                }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
                         "unknown session action {other}"
                     )))
                 }
+            }
+            Ok(())
+        }
+        Command::Update => {
+            // Compare the local version against the remote main branch.
+            let local = env!("CARGO_PKG_VERSION");
+            let remote = std::process::Command::new("git")
+                .args([
+                    "ls-remote",
+                    "https://github.com/gnanam1990/forge.git",
+                    "main",
+                ])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if remote.is_empty() {
+                println!("forge {local} (could not reach remote)");
+            } else {
+                println!("forge {local} — remote main: {remote}");
+                println!("run `git pull` in the forge repo to update.");
+            }
+            Ok(())
+        }
+        Command::Log => {
+            let path = crate::telemetry::default_telemetry_path()?;
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if raw.trim().is_empty() {
+                    println!("no log entries");
+                } else {
+                    println!("{raw}");
+                }
+            } else {
+                println!("no log file at {}", path.display());
             }
             Ok(())
         }
@@ -1244,6 +1332,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Command::Run {
             prompt,
             file,
+            resume,
             workspace,
             max_turns,
         } => {
@@ -1262,14 +1351,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             let agent =
                 Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
             let dir = crate::session::default_sessions_dir()?;
-            let id = format!(
-                "sess-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
-            );
-            let mut session = crate::session::Session::new(&id);
+            let mut session = if let Some(id) = resume {
+                crate::session::Session::load(&dir, &id)?
+            } else {
+                let id = format!(
+                    "sess-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                );
+                crate::session::Session::new(&id)
+            };
             let outcome = agent.run_into(&mut session.messages, &prompt)?;
             session.save(&dir)?;
             wiring.telemetry.record(
@@ -1281,8 +1374,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             )?;
             println!("{}", outcome.final_text);
             eprintln!(
-                "[forge] {} turn(s), {} tool call(s), session {id}",
-                outcome.turns, outcome.tool_calls
+                "[forge] {} turn(s), {} tool call(s), session {}",
+                outcome.turns, outcome.tool_calls, session.id
             );
             Ok(())
         }
