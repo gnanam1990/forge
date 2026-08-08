@@ -25,6 +25,11 @@ Legend: ✅ built · ⬜ planned
 - ✅ **Parallel sub-agents** — `run_parallel`, `forge orchestrate`
 - ✅ **Workflow engine** — DAG, phases, budget-aware fan-out, `forge workflow`
 - ✅ **Stall watchdog** — timeout detection + bounded retries
+- ✅ **Posture** — effort levels (auto/balanced/thorough/zeromaxing), `forge effort`
+- ✅ **Typed plan model** — zeromaxing PRD schema (Name, Description, Tasks,
+  Budget), read-only tasks, `forge plan`
+- ✅ **Truthful plan execution** — budget exhaustion → `Partial`, failed task →
+  `Failed`, only full success → `Completed`
 
 ## Sessions & state
 - ✅ **Sessions & resume** — persist/load conversation, resume across runs

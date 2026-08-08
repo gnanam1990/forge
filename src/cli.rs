@@ -112,6 +112,16 @@ pub enum Command {
     },
     /// Write a working config plus sample workflow and cron files.
     Setup,
+    /// Set the session effort posture: `effort <auto|balanced|thorough|zeromaxing>`.
+    Effort {
+        /// The effort level.
+        level: String,
+    },
+    /// Run a typed plan from a JSON file (the zeromaxing plan model).
+    Plan {
+        /// Path to a JSON plan file.
+        file: PathBuf,
+    },
     /// Write a sample config file to the default location.
     Init,
 }
@@ -406,6 +416,42 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
 
             println!("\nNext: set provider.api_key (or FORGE_API_KEY), then run:\n  forge run \"hello\"\n  forge workflow .forge/workflow.json\n  forge cron .forge/cron.json");
+            Ok(())
+        }
+        Command::Effort { level } => {
+            let effort = crate::posture::Effort::parse(&level).ok_or_else(|| {
+                crate::error::Error::InvalidArgs(format!(
+                    "unknown effort {level}; expected auto, balanced, thorough, or zeromaxing"
+                ))
+            })?;
+            let posture = crate::posture::Posture::from_effort(effort);
+            let auto = crate::posture::Posture::from_effort(crate::posture::Effort::Auto);
+            println!("effort: {}", posture.effort.as_str());
+            println!("delta: {}", posture.delta(&auto));
+            Ok(())
+        }
+        Command::Plan { file } => {
+            let config = Config::load()?;
+            let turns = config.max_turns.unwrap_or(10);
+            let provider = HttpProvider::new(&config.provider)?;
+            let raw = std::fs::read_to_string(&file)?;
+            let plan: crate::plan::Plan = serde_json::from_str(&raw).map_err(|e| {
+                crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
+            })?;
+            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let runner =
+                crate::plan_exec::PlanRunner::new(agent).with_progress(Box::new(|id, status| {
+                    eprintln!("[plan] {id}: {status}");
+                }));
+            let outcome = runner.run(&plan)?;
+            println!("status: {:?}", outcome.status);
+            for (id, text) in &outcome.results {
+                println!("=== {id} ===\n{text}");
+            }
+            eprintln!(
+                "[forge] {} task(s), {} tokens, status {:?}",
+                outcome.tasks_run, outcome.tokens_used, outcome.status
+            );
             Ok(())
         }
         Command::Init => {
