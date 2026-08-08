@@ -57,7 +57,11 @@ pub enum Command {
     /// Show usage stats from telemetry.
     Stats,
     /// Show environment information.
-    Env,
+    Env {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Start an interactive shell session.
     Shell,
     /// Watch a directory and run a command on change: `watch <dir> <command>`.
@@ -210,6 +214,12 @@ pub enum Command {
         /// Save a screenshot to a path.
         #[arg(long)]
         screenshot: Option<String>,
+        /// Wait this many milliseconds before extracting text or screenshots.
+        #[arg(long)]
+        wait: Option<u64>,
+        /// Print the visible text of the page.
+        #[arg(long)]
+        text: bool,
     },
     /// Desktop control: `screenshot <path>`, `click <x> <y>`, `type <text>`.
     Desktop {
@@ -521,6 +531,11 @@ pub enum StashAction {
     Push,
     /// Restore the most recent stash.
     Pop,
+    /// Apply a specific stash by index.
+    Apply {
+        /// The stash index (default 0).
+        index: Option<usize>,
+    },
 }
 
 /// Subcommands for `forge git tag`.
@@ -588,6 +603,9 @@ pub enum GitAction {
         /// Show only commits after a date (e.g. "2024-01-01", "2 weeks ago").
         #[arg(long)]
         since: Option<String>,
+        /// Include commits from all branches.
+        #[arg(long)]
+        all: bool,
     },
     /// List branches.
     Branch,
@@ -676,8 +694,11 @@ pub enum GitAction {
         /// The branch to merge.
         branch: String,
     },
-    /// Checkout a branch or commit: `git checkout <ref>`.
+    /// Checkout a branch or commit: `git checkout [--branch] <ref>`.
     Checkout {
+        /// Create the branch before checking it out.
+        #[arg(long)]
+        branch: bool,
         /// The branch or commit to check out.
         reference: String,
     },
@@ -1697,6 +1718,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             click,
             r#type,
             screenshot,
+            wait,
+            text,
         } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
@@ -1706,6 +1729,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                 .telemetry
                 .record("browser", serde_json::json!({ "url": url }))?;
             println!("opened {url} (target {})", target.id);
+            if let Some(ms) = wait {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
             if let Some(js) = eval {
                 let result = browser.evaluate(&target, &js)?;
                 println!("eval result: {result}");
@@ -1735,6 +1761,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                     .map_err(|e| crate::error::Error::Agent(format!("decode screenshot: {e}")))?;
                 std::fs::write(&path, bytes)?;
                 println!("screenshot saved to {path}");
+            }
+            if text {
+                let body_text = browser.get_text(&target)?;
+                println!("page text:\n{body_text}");
             }
             for tab in browser.list()? {
                 println!("tab: {tab}");
@@ -2712,10 +2742,24 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Env => {
+        Command::Env { json } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            wiring.telemetry.record("env", serde_json::json!({}))?;
+            wiring
+                .telemetry
+                .record("env", serde_json::json!({ "json": json }))?;
+            if json {
+                let info = serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "cwd": std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()),
+                    "home": std::env::var("HOME").unwrap_or_else(|_| "?".into()),
+                    "config": crate::config::config_path().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()),
+                });
+                println!("{}", serde_json::to_string_pretty(&info)?);
+                return Ok(());
+            }
             println!("forge {}", env!("CARGO_PKG_VERSION"));
             println!("os: {}", std::env::consts::OS);
             println!("arch: {}", std::env::consts::ARCH);
@@ -2952,6 +2996,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     author,
                     grep,
                     since,
+                    all,
                 } => {
                     let limit_str = limit.to_string();
                     let mut args: Vec<String> = vec![
@@ -2960,6 +3005,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                         "-n".into(),
                         limit_str.clone(),
                     ];
+                    if all {
+                        args.push("--all".into());
+                    }
                     if stat {
                         args.push("--stat".into());
                     }
@@ -3115,6 +3163,20 @@ fn dispatch(cli: Cli) -> Result<()> {
                             )));
                         }
                         println!("stash restored");
+                    }
+                    StashAction::Apply { index } => {
+                        let mut cmd = std::process::Command::new("git");
+                        cmd.args(["stash", "apply"]).current_dir(&ws);
+                        if let Some(idx) = index {
+                            cmd.arg(format!("stash@{{{idx}}}"));
+                        }
+                        let status = cmd.status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git stash apply failed with {status}"
+                            )));
+                        }
+                        println!("stash applied");
                     }
                 },
                 GitAction::Blame { file } => {
@@ -3308,17 +3370,24 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     println!("merged {branch}");
                 }
-                GitAction::Checkout { reference } => {
-                    let status = std::process::Command::new("git")
-                        .args(["checkout", &reference])
-                        .current_dir(&ws)
-                        .status()?;
+                GitAction::Checkout { branch, reference } => {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.arg("checkout").current_dir(&ws);
+                    if branch {
+                        cmd.arg("-b");
+                    }
+                    cmd.arg(&reference);
+                    let status = cmd.status()?;
                     if !status.success() {
                         return Err(crate::error::Error::Tool(format!(
                             "git checkout {reference} failed with {status}"
                         )));
                     }
-                    println!("checked out {reference}");
+                    if branch {
+                        println!("created and checked out {reference}");
+                    } else {
+                        println!("checked out {reference}");
+                    }
                 }
                 GitAction::Clean { force } => {
                     let mut cmd = std::process::Command::new("git");

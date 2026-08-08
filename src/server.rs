@@ -120,13 +120,17 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
             .to_string(),
         )),
         ("POST", "/run") => {
-            let prompt: serde_json::Value = serde_json::from_str(&req.body)
+            let body: serde_json::Value = serde_json::from_str(&req.body)
                 .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
-            let prompt = prompt
+            let prompt = body
                 .get("prompt")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| Error::InvalidArgs("body must be {\"prompt\": string}".into()))?;
-            let outcome = run_agent(&config, prompt)?;
+            let resume = body
+                .get("session")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let outcome = run_agent(&config, prompt, resume.as_deref())?;
             Ok((
                 200,
                 "application/json",
@@ -280,21 +284,29 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
 }
 
 /// Run the agent once on a prompt and return the outcome.
-fn run_agent(config: &Config, prompt: &str) -> Result<crate::agent::AgentOutcome> {
+fn run_agent(
+    config: &Config,
+    prompt: &str,
+    resume: Option<&str>,
+) -> Result<crate::agent::AgentOutcome> {
     let turns = config.max_turns.unwrap_or(10);
     let provider = crate::agent::http::HttpProvider::new(&config.provider)?;
     let wiring = crate::wiring::build_wiring(config)?;
     let agent = crate::agent::Agent::new(Box::new(provider), wiring.registry, turns)
         .with_hooks(wiring.hooks);
     let dir = crate::session::default_sessions_dir()?;
-    let id = format!(
-        "sess-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    );
-    let mut session = crate::session::Session::new(&id);
+    let mut session = if let Some(id) = resume {
+        crate::session::Session::load(&dir, id)?
+    } else {
+        let id = format!(
+            "sess-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        );
+        crate::session::Session::new(&id)
+    };
     let outcome = agent.run_into(&mut session.messages, prompt)?;
     session.save(&dir)?;
     Ok(outcome)
