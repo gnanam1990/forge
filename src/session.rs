@@ -36,6 +36,11 @@ impl Session {
         self.messages.len()
     }
 
+    /// A rough estimate of the total tokens across all messages.
+    pub fn token_usage(&self) -> usize {
+        self.messages.iter().map(|m| m.text_len()).sum()
+    }
+
     /// Serialize the session to JSON.
     pub fn export(&self) -> Result<String> {
         Ok(serde_json::to_string_pretty(self)?)
@@ -126,5 +131,14 @@ mod tests {
     fn list_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(Session::list(dir.path()).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn token_usage_estimates_text() {
+        let mut session = Session::new("tok");
+        // "aaaaaaaaaaaa" = 12 chars -> 3 tokens each; two messages -> 6 total.
+        session.messages.push(Message::User("aaaaaaaaaaaa".into()));
+        session.messages.push(Message::User("aaaaaaaaaaaa".into()));
+        assert_eq!(session.token_usage(), 6);
     }
 }

@@ -40,6 +40,22 @@ pub enum Message {
     },
 }
 
+impl Message {
+    /// The raw text payload of the message (used for token estimation).
+    pub fn text(&self) -> String {
+        match self {
+            Message::System(t) | Message::User(t) => t.clone(),
+            Message::Assistant { content, .. } => content.clone(),
+            Message::Tool { output, .. } => output.clone(),
+        }
+    }
+
+    /// A rough estimate of the message's token count (~4 chars per token).
+    pub fn text_len(&self) -> usize {
+        self.text().chars().count() / 4
+    }
+}
+
 /// The assistant's reply to a turn.
 #[derive(Debug, Clone)]
 pub struct AssistantMessage {

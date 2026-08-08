@@ -287,8 +287,82 @@ pub enum Command {
     Hooks,
     /// Show the permission policy for tools.
     Permission,
+    /// Run git subcommands: `git <log|branch|remote|status>`.
+    Git {
+        #[command(subcommand)]
+        action: GitAction,
+    },
+    /// Create a pull request with the `gh` CLI: `pr [--base main] [--title ...]`.
+    Pr {
+        /// The base branch to target.
+        #[arg(long, default_value = "main")]
+        base: String,
+        /// The pull request title (else generated from the last commit).
+        #[arg(long)]
+        title: Option<String>,
+        /// The pull request body (else a short default).
+        #[arg(long)]
+        body: Option<String>,
+    },
+    /// Run a command inside the sandbox: `sandbox run <command>`.
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxAction,
+    },
+    /// Search the codebase index for files containing a query.
+    Search {
+        /// The search query.
+        query: String,
+    },
+    /// Show a session's token/context usage: `context <session-id>`.
+    Context {
+        /// The session id.
+        session: String,
+    },
+    /// Switch the active model: `model use <index|name>`.
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
     /// Write a sample config file to the default location.
     Init,
+}
+
+/// Subcommands for `forge model`.
+#[derive(Subcommand)]
+pub enum ModelAction {
+    /// Switch the active model to a saved provider.
+    Use {
+        /// The saved provider index or model name.
+        target: String,
+    },
+}
+
+/// Subcommands for `forge git`.
+#[derive(Subcommand)]
+pub enum GitAction {
+    /// Show recent commit history.
+    Log {
+        /// Limit the number of commits shown.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// List branches.
+    Branch,
+    /// Show the configured remotes.
+    Remote,
+    /// Show the working tree status.
+    Status,
+}
+
+/// Subcommands for `forge sandbox`.
+#[derive(Subcommand)]
+pub enum SandboxAction {
+    /// Run a command inside the sandbox.
+    Run {
+        /// The command to run.
+        command: String,
+    },
 }
 
 /// Subcommands for `forge mcp`.
@@ -423,6 +497,12 @@ fn print_help() {
          token <text> [--file]                         count tokens\n\
          hooks                                         list hooks\n\
          permission                                    show tool permissions\n\
+         git <log|branch|remote|status>                git helpers\n\
+         pr [--base main] [--title]                    create a pull request\n\
+         sandbox run <cmd>                              run a command in the sandbox\n\
+         search <query>                                search the codebase\n\
+         context <session-id>                          show session context usage\n\
+         model use <index|name>                        switch the active model\n\
          browser <url> [--eval] [--click] [--type] [--screenshot]  browser\n\
          desktop <screenshot|click|type>               desktop control\n\
          plugin <list|enable|disable|add>              manage plugins\n\
@@ -1470,6 +1550,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                     let path = crate::config::config_path()?;
                     let mut config = config;
                     config.provider.model = Some(model.clone());
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                     println!("set model to {model}");
                 }
@@ -1495,6 +1578,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                         model: Some(model.clone()),
                         ..Default::default()
                     });
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                     println!("added provider {model}");
                 }
@@ -1766,6 +1852,172 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Git { action } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("git", serde_json::json!({}))?;
+            let ws = config.workspace_root();
+            match action {
+                GitAction::Log { limit } => {
+                    let out = std::process::Command::new("git")
+                        .args(["log", "--oneline", "-n", &limit.to_string()])
+                        .current_dir(&ws)
+                        .output()?;
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        println!("no commits");
+                    } else {
+                        println!("{text}");
+                    }
+                }
+                GitAction::Branch => {
+                    let out = std::process::Command::new("git")
+                        .args(["branch", "-a"])
+                        .current_dir(&ws)
+                        .output()?;
+                    println!("{}", String::from_utf8_lossy(&out.stdout));
+                }
+                GitAction::Remote => {
+                    let out = std::process::Command::new("git")
+                        .args(["remote", "-v"])
+                        .current_dir(&ws)
+                        .output()?;
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        println!("no remotes configured");
+                    } else {
+                        println!("{text}");
+                    }
+                }
+                GitAction::Status => {
+                    let out = std::process::Command::new("git")
+                        .args(["status", "--short"])
+                        .current_dir(&ws)
+                        .output()?;
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        println!("working tree clean");
+                    } else {
+                        println!("{text}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        Command::Pr { base, title, body } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("pr", serde_json::json!({}))?;
+            let ws = config.workspace_root();
+            if which("gh") {
+                let title = match title {
+                    Some(t) => t,
+                    None => {
+                        let out = std::process::Command::new("git")
+                            .args(["log", "-1", "--pretty=%s"])
+                            .current_dir(&ws)
+                            .output()?;
+                        String::from_utf8_lossy(&out.stdout).trim().to_string()
+                    }
+                };
+                let body = body.unwrap_or_else(|| "Generated by forge.".to_string());
+                let mut cmd = std::process::Command::new("gh");
+                cmd.args([
+                    "pr", "create", "--base", &base, "--title", &title, "--body", &body,
+                ])
+                .current_dir(&ws);
+                let status = cmd.status()?;
+                if !status.success() {
+                    return Err(crate::error::Error::Tool(format!(
+                        "gh pr create failed with {status}"
+                    )));
+                }
+            } else {
+                return Err(crate::error::Error::Tool(
+                    "gh CLI not found on PATH; install GitHub CLI to create PRs".into(),
+                ));
+            }
+            Ok(())
+        }
+        Command::Sandbox { action } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            match action {
+                SandboxAction::Run { command } => {
+                    wiring
+                        .telemetry
+                        .record("sandbox", serde_json::json!({ "command": command }))?;
+                    let sandbox = crate::sandbox::Sandbox::new(true);
+                    let result = sandbox.run(&command)?;
+                    println!("{}", result.output.trim_end());
+                    if result.exit_code != 0 {
+                        return Err(crate::error::Error::Tool(format!(
+                            "sandbox command exited with {}",
+                            result.exit_code
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
+        Command::Search { query } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring
+                .telemetry
+                .record("search", serde_json::json!({ "query": query }))?;
+            let ctx = crate::tools::ToolContext::new(config.workspace_root());
+            let tool = crate::tools::search::SearchTool::new();
+            let result =
+                crate::tools::Tool::run(&tool, &serde_json::json!({ "query": query }), &ctx)?;
+            println!("{}", result.output);
+            Ok(())
+        }
+        Command::Context { session } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("context", serde_json::json!({}))?;
+            let dir = crate::session::default_sessions_dir()?;
+            let s = crate::session::Session::load(&dir, &session)?;
+            println!("session: {}", s.id);
+            println!("messages: {}", s.messages.len());
+            println!("tokens: {}", s.token_usage());
+            Ok(())
+        }
+        Command::Model { action } => match action {
+            ModelAction::Use { target } => {
+                let path = crate::config::config_path()?;
+                let mut config = Config::load()?;
+                let provider = if let Ok(idx) = target.parse::<usize>() {
+                    config.saved_providers.get(idx).cloned().ok_or_else(|| {
+                        crate::error::Error::InvalidArgs(format!(
+                            "no saved provider at index {idx}"
+                        ))
+                    })?
+                } else {
+                    config
+                        .saved_providers
+                        .iter()
+                        .find(|p| p.model.as_deref() == Some(target.as_str()))
+                        .cloned()
+                        .ok_or_else(|| {
+                            crate::error::Error::InvalidArgs(format!(
+                                "no saved provider named {target}"
+                            ))
+                        })?
+                };
+                config.provider = provider;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                println!(
+                    "active model: {}",
+                    config.provider.model.as_deref().unwrap_or("(none)")
+                );
+                Ok(())
+            }
+        },
         Command::Init => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
