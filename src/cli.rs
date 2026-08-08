@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::agent::{http::HttpProvider, Agent};
 use crate::config::Config;
@@ -153,6 +153,9 @@ pub enum Command {
         /// Show only staged changes.
         #[arg(long)]
         staged: bool,
+        /// Show diff statistics instead of the full diff.
+        #[arg(long)]
+        stat: bool,
     },
     /// Commit staged changes with an AI-generated or explicit message.
     Commit {
@@ -247,10 +250,10 @@ pub enum Command {
     Update,
     /// View the telemetry log.
     Log,
-    /// Toggle telemetry: `telemetry <on|off>`.
+    /// Manage telemetry: `telemetry on`, `telemetry off`, `telemetry export <path>`.
     Telemetry {
-        /// on or off.
-        enabled: String,
+        #[command(subcommand)]
+        action: TelemetryAction,
     },
     /// Manage command aliases: `alias` (list), `alias <name> <command>` (add),
     /// `alias remove <name>` (remove).
@@ -346,6 +349,31 @@ pub enum Command {
     },
     /// Write a sample config file to the default location.
     Init,
+    /// Generate shell completions: `completions <bash|zsh|fish>`.
+    Completions {
+        /// The shell to generate completions for.
+        shell: String,
+    },
+    /// Print a man-style reference for forge.
+    Man,
+    /// Self-update by pulling the repo and rebuilding.
+    Upgrade,
+    /// Show a summary of the current identity and configuration.
+    Whoami,
+}
+
+/// Subcommands for `forge telemetry`.
+#[derive(Subcommand)]
+pub enum TelemetryAction {
+    /// Enable telemetry.
+    On,
+    /// Disable telemetry.
+    Off,
+    /// Export the telemetry log to a file.
+    Export {
+        /// The output file path.
+        path: PathBuf,
+    },
 }
 
 /// Subcommands for `forge model`.
@@ -571,9 +599,104 @@ fn print_help() {
          info                                          show summary\n\
          setup                                         write config + samples\n\
          init                                          scaffold a project\n\
+         completions <bash|zsh|fish>                   shell completions\n\
+         man                                           man-style reference\n\
+         upgrade                                       self-update and rebuild\n\
+         whoami                                        show identity summary\n\
          version                                       print version\n\
          help                                          this help"
     );
+}
+
+/// Print a man-style reference for forge.
+fn print_man() {
+    println!(
+        "NAME\n    forge — a coding agent in Rust\n\n\
+         SYNOPSIS\n    forge <command> [options]\n\n\
+         DESCRIPTION\n    forge is a self-contained coding agent. It runs a model\n\
+         provider in a loop, calling tools (read/write/edit files, run bash,\n\
+         search, git, web, browser, desktop) until the task is done.\n\n\
+         COMMANDS\n    run <prompt>            run the agent on a prompt\n\
+         chat                    interactive TUI\n\
+         resume <id> <prompt>    resume a session\n\
+         sessions                list sessions\n\
+         export/import           session export/import\n\
+         orchestrate <file>      parallel sub-agents\n\
+         workflow <file>          run a workflow DAG\n\
+         plan <file>              run a typed plan\n\
+         memory                  manage cross-session memory\n\
+         cron <file>              run scheduled jobs\n\
+         review                  review the git diff\n\
+         mcp                     call/manage MCP servers\n\
+         browser / desktop       browser and desktop control\n\
+         plugin                  manage plugins\n\
+         alias                   manage command aliases\n\
+         config                  show or reset config\n\
+         doctor                  check the environment\n\
+         diff / commit           git diff and commit\n\
+         build/test/lint/format/check  run project commands\n\
+         agent <prompt>          spawn a sub-agent\n\
+         audit                   audit dependencies\n\
+         todo                    scan for TODO/FIXME\n\
+         serve                   start the HTTP API\n\
+         backup/restore          backup and restore state\n\
+         git                     git helpers\n\
+         pr                      create a pull request\n\
+         sandbox                 run commands in a sandbox\n\
+         search                  search the codebase\n\
+         context                 show session context usage\n\
+         model use               switch the active model\n\
+         completions             generate shell completions\n\
+         upgrade                 self-update and rebuild\n\
+         whoami                  show identity summary\n\n\
+         CONFIG\n    ~/.config/forge/config.json (override with FORGE_CONFIG)\n\
+         Sessions: ~/.local/share/forge/sessions\n\
+         Memory:   ~/.local/share/forge/memory.json\n\
+         Telemetry: ~/.local/share/forge/telemetry.jsonl\n\n\
+         ENVIRONMENT\n    FORGE_API_KEY   API key for the model provider\n\
+         FORGE_CONFIG   path to the config file\n\n\
+         EXIT STATUS\n    0 success; 1 error; 2 usage; 3 config; 4 tool; 5 invalid args; 6 agent"
+    );
+}
+
+/// Bash completion script for forge.
+fn completions_bash() -> String {
+    let cmds = command_names();
+    let list = cmds.join(" ");
+    format!(
+        "_forge() {{\n    local cur=\"${{COMP_WORDS[COMP_CWORD]}}\"\n    COMPREPLY=( $(compgen -W \"{list}\" -- \"$cur\") )\n}}\ncomplete -F _forge forge\n"
+    )
+}
+
+/// Zsh completion script for forge.
+fn completions_zsh() -> String {
+    let cmds = command_names();
+    let list = cmds.join(" ");
+    format!(
+        "#compdef forge\n_forge() {{\n    local -a commands\n    commands=({list})\n    _describe 'command' commands\n}}\ncompdef _forge forge\n"
+    )
+}
+
+/// Fish completion script for forge.
+fn completions_fish() -> String {
+    let cmds = command_names();
+    let mut out = String::new();
+    for c in cmds {
+        out.push_str(&format!(
+            "complete -c forge -f -n '__fish_use_subcommand' -a '{c}'\n"
+        ));
+    }
+    out
+}
+
+/// The list of top-level forge subcommand names.
+fn command_names() -> Vec<String> {
+    let mut names: Vec<String> = Cli::command()
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    names.sort();
+    names
 }
 
 fn dispatch(cli: Cli) -> Result<()> {
@@ -917,19 +1040,26 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
-        Command::Diff { staged } => {
+        Command::Diff { staged, stat } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            wiring
-                .telemetry
-                .record("diff", serde_json::json!({ "staged": staged }))?;
+            wiring.telemetry.record(
+                "diff",
+                serde_json::json!({ "staged": staged, "stat": stat }),
+            )?;
             let ws = config.workspace_root();
+            let base: &[&str] = if staged {
+                &["diff", "--staged"]
+            } else {
+                &["diff", "HEAD"]
+            };
+            let args: Vec<&str> = if stat {
+                base.iter().copied().chain(["--stat"]).collect()
+            } else {
+                base.to_vec()
+            };
             let output = std::process::Command::new("git")
-                .args(if staged {
-                    ["diff", "--staged"]
-                } else {
-                    ["diff", "HEAD"]
-                })
+                .args(&args)
                 .current_dir(&ws)
                 .output()?;
             let text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -1445,14 +1575,45 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Telemetry { enabled } => {
-            let path = crate::config::config_path()?;
-            let mut config = Config::load()?;
-            config.telemetry = enabled == "on" || enabled == "true";
-            std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
-            println!("telemetry {}", if config.telemetry { "on" } else { "off" });
-            Ok(())
-        }
+        Command::Telemetry { action } => match action {
+            TelemetryAction::On => {
+                let path = crate::config::config_path()?;
+                let mut config = Config::load()?;
+                config.telemetry = true;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                println!("telemetry on");
+                Ok(())
+            }
+            TelemetryAction::Off => {
+                let path = crate::config::config_path()?;
+                let mut config = Config::load()?;
+                config.telemetry = false;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                println!("telemetry off");
+                Ok(())
+            }
+            TelemetryAction::Export { path } => {
+                let config = Config::load()?;
+                let wiring = crate::wiring::build_wiring(&config)?;
+                wiring
+                    .telemetry
+                    .record("telemetry_export", serde_json::json!({}))?;
+                let src = crate::telemetry::default_telemetry_path()?;
+                let raw = std::fs::read_to_string(&src).unwrap_or_default();
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, raw)?;
+                println!("exported telemetry to {}", path.display());
+                Ok(())
+            }
+        },
         Command::Alias { name, command } => {
             let path = crate::config::config_path()?;
             let mut config = Config::load()?;
@@ -2152,6 +2313,85 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
+        Command::Completions { shell } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring
+                .telemetry
+                .record("completions", serde_json::json!({ "shell": shell }))?;
+            let script = match shell.as_str() {
+                "bash" => completions_bash(),
+                "zsh" => completions_zsh(),
+                "fish" => completions_fish(),
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unsupported shell {other}; use bash, zsh, or fish"
+                    )))
+                }
+            };
+            println!("{script}");
+            Ok(())
+        }
+        Command::Man => {
+            print_man();
+            Ok(())
+        }
+        Command::Upgrade => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("upgrade", serde_json::json!({}))?;
+            let ws = config.workspace_root();
+            let pull = std::process::Command::new("git")
+                .args(["pull", "--ff-only"])
+                .current_dir(&ws)
+                .output()?;
+            if !pull.status.success() {
+                return Err(crate::error::Error::Tool(format!(
+                    "git pull failed: {}",
+                    String::from_utf8_lossy(&pull.stderr)
+                )));
+            }
+            println!("{}", String::from_utf8_lossy(&pull.stdout).trim_end());
+            let build = std::process::Command::new("cargo")
+                .args(["build", "--release"])
+                .current_dir(&ws)
+                .status()?;
+            if !build.success() {
+                return Err(crate::error::Error::Tool(format!(
+                    "cargo build --release failed with {build}"
+                )));
+            }
+            println!("forge upgraded and rebuilt");
+            Ok(())
+        }
+        Command::Whoami => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("whoami", serde_json::json!({}))?;
+            let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+            let home = std::env::var("HOME").unwrap_or_else(|_| "unknown".into());
+            println!("user: {user}");
+            println!("home: {home}");
+            println!(
+                "model: {}",
+                config.provider.model.as_deref().unwrap_or("(none)")
+            );
+            println!(
+                "base_url: {}",
+                config.provider.base_url.as_deref().unwrap_or("(default)")
+            );
+            println!(
+                "api_key: {}",
+                if config.provider.api_key.is_some() {
+                    "set"
+                } else {
+                    "unset"
+                }
+            );
+            println!("workspace: {}", config.workspace_root().display());
+            println!("telemetry: {}", if config.telemetry { "on" } else { "off" });
+            Ok(())
+        }
         Command::Init => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
