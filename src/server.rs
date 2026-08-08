@@ -130,7 +130,11 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
                 .get("session")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
-            let outcome = run_agent(&config, prompt, resume.as_deref())?;
+            let max_turns = body
+                .get("max_turns")
+                .and_then(serde_json::Value::as_u64)
+                .map(|t| t as usize);
+            let outcome = run_agent(&config, prompt, resume.as_deref(), max_turns)?;
             Ok((
                 200,
                 "application/json",
@@ -288,8 +292,9 @@ fn run_agent(
     config: &Config,
     prompt: &str,
     resume: Option<&str>,
+    max_turns: Option<usize>,
 ) -> Result<crate::agent::AgentOutcome> {
-    let turns = config.max_turns.unwrap_or(10);
+    let turns = max_turns.or(config.max_turns).unwrap_or(10);
     let provider = crate::agent::http::HttpProvider::new(&config.provider)?;
     let wiring = crate::wiring::build_wiring(config)?;
     let agent = crate::agent::Agent::new(Box::new(provider), wiring.registry, turns)

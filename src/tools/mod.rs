@@ -10,6 +10,7 @@ pub mod copy_file;
 pub mod delete_file;
 pub mod edit_file;
 pub mod git;
+pub mod git_branch;
 pub mod git_log;
 pub mod glob;
 pub mod grep;
@@ -142,6 +143,7 @@ impl Registry {
         registry.register(Box::new(git::GitDiffTool::new()));
         registry.register(Box::new(git::GitCommitTool::new()));
         registry.register(Box::new(git_log::GitLogTool::new()));
+        registry.register(Box::new(git_branch::GitBranchTool::new()));
         registry.register(Box::new(apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(search::SearchTool::new()));
         registry.register(Box::new(terminal::TerminalTool::new()));

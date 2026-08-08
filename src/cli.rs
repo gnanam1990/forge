@@ -144,6 +144,9 @@ pub enum Command {
         /// Keep running on the jobs' intervals instead of once.
         #[arg(long)]
         forever: bool,
+        /// List the scheduled jobs without running them.
+        #[arg(long)]
+        list: bool,
     },
     /// Review the current git diff for common issues.
     Review,
@@ -640,7 +643,11 @@ pub enum GitAction {
         action: RemoteAction,
     },
     /// Show the working tree status.
-    Status,
+    Status {
+        /// Emit machine-readable porcelain v1 format.
+        #[arg(long)]
+        porcelain: bool,
+    },
     /// Stage files: `git add <file>...`.
     Add {
         /// The files to stage.
@@ -1388,7 +1395,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Cron { file, forever } => {
+        Command::Cron {
+            file,
+            forever,
+            list,
+        } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
             let raw = std::fs::read_to_string(&file)?;
@@ -1398,6 +1409,15 @@ fn dispatch(cli: Cli) -> Result<()> {
             let mut scheduler = crate::cron::Scheduler::new();
             for job in jobs {
                 scheduler.add(job);
+            }
+            if list {
+                for job in scheduler.jobs() {
+                    println!(
+                        "{}  every {}s  {}",
+                        job.name, job.interval_secs, job.command
+                    );
+                }
+                return Ok(());
             }
             wiring.telemetry.record(
                 "cron",
@@ -3091,9 +3111,13 @@ fn dispatch(cli: Cli) -> Result<()> {
                         println!("renamed remote {old} to {new}");
                     }
                 },
-                GitAction::Status => {
+                GitAction::Status { porcelain } => {
                     let out = std::process::Command::new("git")
-                        .args(["status", "--short"])
+                        .args(if porcelain {
+                            ["status", "--porcelain"]
+                        } else {
+                            ["status", "--short"]
+                        })
                         .current_dir(&ws)
                         .output()?;
                     let text = String::from_utf8_lossy(&out.stdout).into_owned();
