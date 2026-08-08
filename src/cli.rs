@@ -30,6 +30,9 @@ pub enum Command {
         /// Resume a saved session by id.
         #[arg(long)]
         resume: Option<String>,
+        /// Send a completion notification.
+        #[arg(long)]
+        notify: bool,
         /// Override the workspace root.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -114,9 +117,13 @@ pub enum Command {
         path: PathBuf,
     },
     /// Start an interactive chat session.
-    Chat,
+    Chat {
+        /// Resume a saved session by id.
+        #[arg(long)]
+        resume: Option<String>,
+    },
     /// Manage cross-session memory: `remember <key> <value>`, `recall <key>`,
-    /// `list`.
+    /// `list`, `clear`, `export <path>`.
     Memory {
         /// Subcommand: remember | recall | list.
         action: String,
@@ -175,11 +182,18 @@ pub enum Command {
         /// Attempt to fix config issues.
         #[arg(long)]
         fix: bool,
+        /// Emit the checks as JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
     /// Print version, tools, and config summary.
     Info,
     /// Print the current config (with the API key redacted).
-    Config,
+    Config {
+        /// Reset the config to defaults.
+        #[arg(long)]
+        reset: bool,
+    },
     /// Set a config value: `config set <key> <value>`.
     ConfigSet {
         /// The config key (e.g. provider.model, max_turns).
@@ -205,12 +219,13 @@ pub enum Command {
         /// on or off.
         enabled: String,
     },
-    /// Manage command aliases: `alias <name> <command>`.
+    /// Manage command aliases: `alias` (list), `alias <name> <command>` (add),
+    /// `alias remove <name>` (remove).
     Alias {
-        /// The alias name.
-        name: String,
-        /// The command it expands to.
-        command: String,
+        /// The alias name (omit to list all aliases).
+        name: Option<String>,
+        /// The command it expands to (omit to remove the alias).
+        command: Option<String>,
     },
     /// Manage plugins: `plugin <list|enable|disable|add>`.
     Plugin {
@@ -281,15 +296,16 @@ fn print_help() {
          effort <level>                                set effort posture\n\
          tools                                         list tools\n\
          models                                        list models\n\
-         memory <remember|recall|list>                 manage memory\n\
+         memory <remember|recall|list|clear|export>      manage memory\n\
          cron <file> [--forever]                       run scheduled jobs\n\
          review                                        review the git diff\n\
          mcp <server> <tool> <args>                    call an MCP tool\n\
          browser <url> [--eval] [--click] [--type] [--screenshot]  browser\n\
          desktop <screenshot|click|type>               desktop control\n\
          plugin <list|enable|disable|add>              manage plugins\n\
-         config                                        show config\n\
-         doctor                                        check environment\n\
+         alias [name] [command]                        list/add/remove aliases\n\
+         config [--reset]                              show or reset config\n\
+         doctor [--json] [--fix]                       check environment\n\
          info                                          show summary\n\
          setup                                         write config + samples\n\
          init                                          scaffold a project\n\
@@ -453,9 +469,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
-        Command::Chat => {
+        Command::Chat { resume } => {
             let config = Config::load()?;
-            crate::tui::run_chat(&config)
+            crate::tui::run_chat(&config, resume.as_deref())
         }
         Command::Memory { action, key, value } => {
             let config = Config::load()?;
@@ -492,6 +508,13 @@ fn dispatch(cli: Cli) -> Result<()> {
                     memory.clear();
                     memory.save()?;
                     println!("memory cleared");
+                }
+                "export" => {
+                    let path = key
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("path required".into()))?;
+                    let json = memory.export()?;
+                    std::fs::write(&path, json)?;
+                    println!("exported memory to {path}");
                 }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
@@ -723,15 +746,24 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("\nNext: set provider.api_key (or FORGE_API_KEY), then run:\n  forge run \"hello\"\n  forge workflow .forge/workflow.json\n  forge cron .forge/cron.json");
             Ok(())
         }
-        Command::Doctor { fix } => {
+        Command::Doctor { fix, json } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
             wiring
                 .telemetry
-                .record("doctor", serde_json::json!({ "fix": fix }))?;
+                .record("doctor", serde_json::json!({ "fix": fix, "json": json }))?;
             let mut ok = true;
+            let mut checks: Vec<serde_json::Value> = Vec::new();
             let mut check = |name: &str, pass: bool, detail: &str| {
-                println!("[{}] {name}: {detail}", if pass { "ok" } else { "MISSING" });
+                if json {
+                    checks.push(serde_json::json!({
+                        "name": name,
+                        "ok": pass,
+                        "detail": detail,
+                    }));
+                } else {
+                    println!("[{}] {name}: {detail}", if pass { "ok" } else { "MISSING" });
+                }
                 if !pass {
                     ok = false;
                 }
@@ -755,7 +787,15 @@ fn dispatch(cli: Cli) -> Result<()> {
             if cfg!(target_os = "macos") {
                 check("desktop", which("cliclick"), "cliclick (desktop control)");
             }
-            if ok {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": ok,
+                        "checks": checks,
+                    }))?
+                );
+            } else if ok {
                 println!("\nall checks passed");
             } else {
                 println!("\nsome checks failed — see above");
@@ -805,10 +845,35 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("sessions: {}", sessions.len());
             Ok(())
         }
-        Command::Config => {
+        Command::Config { reset } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            wiring.telemetry.record("config", serde_json::json!({}))?;
+            wiring
+                .telemetry
+                .record("config", serde_json::json!({ "reset": reset }))?;
+            if reset {
+                let path = crate::config::config_path()?;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let sample = r#"{
+  "workspace": ".",
+  "provider": {
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "api_key": ""
+  },
+  "max_turns": 10,
+  "mcp_servers": [],
+  "plugins_dir": ".forge/plugins",
+  "hooks": [],
+  "telemetry": true
+}
+"#;
+                std::fs::write(&path, sample)?;
+                println!("reset config to defaults at {}", path.display());
+                return Ok(());
+            }
             let mut redacted = config.clone();
             if let Some(key) = redacted.provider.api_key.as_mut() {
                 if !key.is_empty() {
@@ -919,9 +984,55 @@ fn dispatch(cli: Cli) -> Result<()> {
         Command::Alias { name, command } => {
             let path = crate::config::config_path()?;
             let mut config = Config::load()?;
-            config.aliases.insert(name.clone(), command.clone());
-            std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
-            println!("alias {name} = {command}");
+            // `alias remove <name>` is a remove; `alias <name> <command>` is an add.
+            if name.as_deref() == Some("remove") {
+                let target = command.ok_or_else(|| {
+                    crate::error::Error::InvalidArgs("alias name required".into())
+                })?;
+                if config.aliases.remove(&target).is_some() {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("removed alias {target}");
+                } else {
+                    println!("no alias named {target}");
+                }
+                return Ok(());
+            }
+            match (name, command) {
+                (None, _) => {
+                    // List all aliases.
+                    if config.aliases.is_empty() {
+                        println!("no aliases defined");
+                    } else {
+                        let mut names: Vec<&String> = config.aliases.keys().collect();
+                        names.sort();
+                        for n in names {
+                            println!("{n} = {}", config.aliases[n]);
+                        }
+                    }
+                }
+                (Some(name), Some(command)) => {
+                    config.aliases.insert(name.clone(), command.clone());
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("alias {name} = {command}");
+                }
+                (Some(name), None) => {
+                    if config.aliases.remove(&name).is_some() {
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                        println!("removed alias {name}");
+                    } else {
+                        println!("no alias named {name}");
+                    }
+                }
+            }
             Ok(())
         }
         Command::Plugins => {
@@ -1333,6 +1444,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             prompt,
             file,
             resume,
+            notify,
             workspace,
             max_turns,
         } => {
@@ -1372,6 +1484,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                     "tool_calls": outcome.tool_calls,
                 }),
             )?;
+            if notify {
+                crate::notify::Notifier::new(true)
+                    .notify("forge", &format!("run finished ({} turns)", outcome.turns))?;
+            }
             println!("{}", outcome.final_text);
             eprintln!(
                 "[forge] {} turn(s), {} tool call(s), session {}",

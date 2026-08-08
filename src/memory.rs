@@ -70,6 +70,12 @@ impl Memory {
         fs::write(&self.path, raw)?;
         Ok(())
     }
+
+    /// Export the facts as a pretty JSON string (without the internal path).
+    pub fn export(&self) -> Result<String> {
+        serde_json::to_string_pretty(&self.facts)
+            .map_err(|e| Error::Config(format!("serialize memory: {e}")))
+    }
 }
 
 /// The default memory file: `~/.local/share/forge/memory.json`.
@@ -166,5 +172,16 @@ mod tests {
         }
         let loaded = Memory::load(path).unwrap();
         assert_eq!(loaded.recall("key"), Some("value"));
+    }
+
+    #[test]
+    fn export_serializes_facts_as_json() {
+        let mut memory = Memory::new();
+        memory.remember("lang", "rust");
+        memory.remember("editor", "vim");
+        let json = memory.export().unwrap();
+        let parsed: HashMap<String, String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.get("lang").map(String::as_str), Some("rust"));
+        assert_eq!(parsed.get("editor").map(String::as_str), Some("vim"));
     }
 }

@@ -118,18 +118,22 @@ impl App {
 }
 
 /// Run the full-screen TUI.
-pub fn run_chat(config: &Config) -> Result<()> {
+pub fn run_chat(config: &Config, resume: Option<&str>) -> Result<()> {
     let provider = HttpProvider::new(&config.provider)?;
     let turns = config.max_turns.unwrap_or(10);
     let sessions_dir = default_sessions_dir()?;
-    let id = format!(
-        "sess-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    );
-    let session = Session::new(&id);
+    let session = if let Some(id) = resume {
+        Session::load(&sessions_dir, id)?
+    } else {
+        let id = format!(
+            "sess-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        );
+        Session::new(&id)
+    };
     let wiring = crate::wiring::build_wiring(config)?;
     let agent = Agent::new(Box::new(provider), wiring.registry, turns)
         .with_approver(Box::new(|tool| {
