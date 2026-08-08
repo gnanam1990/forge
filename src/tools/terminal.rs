@@ -1,76 +1,75 @@
 //! `terminal` — run a command in the workspace and return its output, plus a
-//! persistent terminal session that keeps a shell alive across commands.
+//! persistent terminal session backed by a real pseudo-terminal (pty).
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::io::{Read, Write};
 
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde_json::Value;
 
 use super::{string_arg, Tool, ToolContext, ToolResult};
 use crate::error::Result;
 use crate::permission::Permission;
 
-/// A persistent shell session: a long-lived `sh` process with piped stdin and
-/// stdout, so state (cwd, env, variables) survives across commands.
+/// A persistent terminal session backed by a real pty, so interactive programs
+/// (editors, TUI apps) work and state survives across commands.
 pub struct TerminalSession {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
 }
 
 impl TerminalSession {
-    /// Spawn a persistent shell.
+    /// Spawn a persistent shell in a pty.
     pub fn spawn() -> Result<Self> {
-        let mut child = Command::new("sh")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| crate::error::Error::Agent("no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| crate::error::Error::Agent("no stdout".into()))?;
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| crate::error::Error::Agent(format!("openpty: {e}")))?;
+        let cmd = CommandBuilder::new("sh");
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| crate::error::Error::Agent(format!("spawn shell: {e}")))?;
+        drop(pair.slave);
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| crate::error::Error::Agent(format!("pty reader: {e}")))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| crate::error::Error::Agent(format!("pty writer: {e}")))?;
         Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            _child: child,
+            reader,
+            writer,
         })
     }
 
     /// Send a command to the session.
     pub fn send(&mut self, command: &str) -> Result<()> {
-        self.stdin.write_all(command.as_bytes())?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
+        self.writer.write_all(command.as_bytes())?;
+        self.writer.write_all(b"\n")?;
+        self.writer.flush()?;
         Ok(())
     }
 
     /// Read all currently-available output from the session.
     pub fn read(&mut self) -> Result<String> {
+        let mut buf = [0u8; 4096];
         let mut out = String::new();
         loop {
-            let mut buf = String::new();
-            let n = self.stdout.read_line(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            out.push_str(&buf);
-            if !buf.ends_with('\n') {
-                break;
+            match self.reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => out.push_str(&String::from_utf8_lossy(&buf[..n])),
             }
         }
         Ok(out)
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -98,7 +97,7 @@ impl Tool for TerminalTool {
 
     fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {
         let command = string_arg(args, "command")?;
-        let output = Command::new("sh")
+        let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
             .current_dir(&ctx.workspace_root)

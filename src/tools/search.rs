@@ -50,6 +50,20 @@ impl CodeIndex {
         files
     }
 
+    /// Files whose tokens fuzzy-match the query (subsequence match), used as a
+    /// fallback when an exact search finds nothing.
+    pub fn fuzzy_search(&self, query: &str) -> Vec<String> {
+        let mut files = Vec::new();
+        for (token, paths) in &self.index {
+            if fuzzy_match(query, token) {
+                files.extend(paths.iter().cloned());
+            }
+        }
+        files.sort();
+        files.dedup();
+        files
+    }
+
     /// Persist the index to a file.
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
         if let Some(parent) = path.parent() {
@@ -85,6 +99,25 @@ fn tokenize(text: &str) -> Vec<String> {
     tokens
 }
 
+/// A simple subsequence fuzzy match: every character of `query` appears in
+/// `text` in order.
+fn fuzzy_match(query: &str, text: &str) -> bool {
+    let query: Vec<char> = query.chars().collect();
+    if query.is_empty() {
+        return true;
+    }
+    let mut qi = 0usize;
+    for c in text.chars() {
+        if c == query[qi] {
+            qi += 1;
+            if qi == query.len() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[derive(Default)]
 pub struct SearchTool;
 
@@ -117,6 +150,11 @@ impl Tool for SearchTool {
             }
         };
         let files = index.search(&query.to_lowercase());
+        let files = if files.is_empty() {
+            index.fuzzy_search(&query.to_lowercase())
+        } else {
+            files
+        };
         if files.is_empty() {
             return Ok(ToolResult::ok("no matches"));
         }

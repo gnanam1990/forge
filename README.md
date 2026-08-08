@@ -54,8 +54,14 @@ built to be simple, testable, and easy to extend.
 - **Config validation** — validates workspace, provider, and turn settings.
 - **Config-driven wiring** — auto-loads MCP servers, plugins, hooks, and
   telemetry from config at startup.
-- **Telemetry** — a minimal usage tracker recording run/plan events.
+- **Telemetry** — a minimal usage tracker recording run/plan/workflow events.
 - **Distinct exit codes** — config=2, provider=3, tool=4, args=5, agent=6.
+- **`forge doctor`** — checks the environment (config, provider, git, browser,
+  desktop).
+- **`forge info`** — prints version, workspace, model, tool and session counts.
+- **Real pty terminal** — persistent terminal sessions backed by a real
+  pseudo-terminal, so interactive programs work.
+- **Fuzzy search** — the code index falls back to subsequence matching.
 - **Model-based summarization** — context compaction asks the provider to
   summarize, with a heuristic fallback.
 - **`forge setup`** — writes a working config plus sample workflow and cron

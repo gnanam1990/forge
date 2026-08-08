@@ -253,6 +253,41 @@ impl Browser {
             })
             .unwrap_or_default())
     }
+
+    /// List targets as (id, url) pairs.
+    pub fn list_targets(&self) -> Result<Vec<(String, String)>> {
+        let endpoint = format!("http://127.0.0.1:{}/json/list", self.port);
+        let response = self
+            .client
+            .get(&endpoint)
+            .send()
+            .map_err(|e| Error::Agent(format!("list targets: {e}")))?;
+        let value: Value = response
+            .json()
+            .map_err(|e| Error::Agent(format!("parse targets: {e}")))?;
+        Ok(value
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        let id = t.get("id").and_then(Value::as_str)?;
+                        let url = t.get("url").and_then(Value::as_str).unwrap_or("");
+                        Some((id.to_string(), url.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Close a target by id.
+    pub fn close_target(&self, id: &str) -> Result<()> {
+        let endpoint = format!("http://127.0.0.1:{}/json/close/{}", self.port, id);
+        self.client
+            .get(&endpoint)
+            .send()
+            .map_err(|e| Error::Agent(format!("close target: {e}")))?;
+        Ok(())
+    }
 }
 
 impl Drop for Browser {

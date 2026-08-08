@@ -121,6 +121,10 @@ pub enum Command {
     },
     /// Write a working config plus sample workflow and cron files.
     Setup,
+    /// Check the environment and report what is available.
+    Doctor,
+    /// Print version, tools, and config summary.
+    Info,
     /// Set the session effort posture: `effort <auto|balanced|thorough|zeromaxing>`.
     Effort {
         /// The effort level.
@@ -159,6 +163,13 @@ fn exit_code(e: &crate::error::Error) -> i32 {
     }
 }
 
+/// Check whether a binary is on PATH.
+fn which(name: &str) -> bool {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(':')
+        .any(|dir| std::path::Path::new(dir).join(name).exists())
+}
+
 fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Tools => {
@@ -174,12 +185,20 @@ fn dispatch(cli: Cli) -> Result<()> {
             let config = Config::load()?;
             let turns = max_turns.or(config.max_turns).unwrap_or(10);
             let provider = HttpProvider::new(&config.provider)?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let raw = std::fs::read_to_string(&file)?;
             let prompts: Vec<String> = serde_json::from_str(&raw).map_err(|e| {
                 crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
             })?;
-            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let agent =
+                Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
             let results = agent.run_parallel(&prompts)?;
+            wiring.telemetry.record(
+                "orchestrate",
+                serde_json::json!({
+                    "sub_agents": results.len(),
+                }),
+            )?;
             for (i, result) in results.iter().enumerate() {
                 println!("=== sub-agent {} ===", i + 1);
                 println!("{result}");
@@ -198,9 +217,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             let workflow: crate::workflow::Workflow = serde_json::from_str(&raw).map_err(|e| {
                 crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
             })?;
-            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let wiring = crate::wiring::build_wiring(&config)?;
+            let agent =
+                Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
             let runner = crate::workflow::WorkflowRunner::new(agent);
             let outcome = runner.run(&workflow)?;
+            wiring.telemetry.record(
+                "workflow",
+                serde_json::json!({
+                    "name": workflow.name,
+                    "tasks": outcome.tasks_run,
+                }),
+            )?;
             for (id, text) in &outcome.results {
                 println!("=== {id} ===\n{text}");
             }
@@ -431,7 +459,11 @@ fn dispatch(cli: Cli) -> Result<()> {
     "model": "gpt-4o-mini",
     "api_key": ""
   },
-  "max_turns": 10
+  "max_turns": 10,
+  "mcp_servers": [],
+  "plugins_dir": ".forge/plugins",
+  "hooks": [],
+  "telemetry": true
 }
 "#;
             std::fs::write(&config_path, config)?;
@@ -470,6 +502,55 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
 
             println!("\nNext: set provider.api_key (or FORGE_API_KEY), then run:\n  forge run \"hello\"\n  forge workflow .forge/workflow.json\n  forge cron .forge/cron.json");
+            Ok(())
+        }
+        Command::Doctor => {
+            let mut ok = true;
+            let mut check = |name: &str, pass: bool, detail: &str| {
+                println!("[{}] {name}: {detail}", if pass { "ok" } else { "MISSING" });
+                if !pass {
+                    ok = false;
+                }
+            };
+            let config = Config::load()?;
+            check(
+                "config",
+                config.provider.model.is_some(),
+                "provider model configured",
+            );
+            check(
+                "api key",
+                std::env::var("FORGE_API_KEY").is_ok() || config.provider.api_key.is_some(),
+                "FORGE_API_KEY or provider.api_key",
+            );
+            check("git", which("git"), "git binary");
+            check(
+                "browser",
+                which("google-chrome") || which("chromium"),
+                "chrome/chromium",
+            );
+            if cfg!(target_os = "macos") {
+                check("desktop", which("cliclick"), "cliclick (desktop control)");
+            }
+            if ok {
+                println!("\nall checks passed");
+            } else {
+                println!("\nsome checks failed — see above");
+            }
+            Ok(())
+        }
+        Command::Info => {
+            let config = Config::load()?;
+            let registry = Registry::builtin();
+            let sessions = crate::session::Session::list(&crate::session::default_sessions_dir()?)?;
+            println!("forge {}", env!("CARGO_PKG_VERSION"));
+            println!("workspace: {}", config.workspace_root().display());
+            println!(
+                "model: {}",
+                config.provider.model.as_deref().unwrap_or("(none)")
+            );
+            println!("tools: {}", registry.names().len());
+            println!("sessions: {}", sessions.len());
             Ok(())
         }
         Command::Effort { level } => {

@@ -17,6 +17,9 @@ use crate::error::{Error, Result};
 pub struct Session {
     pub id: String,
     pub messages: Vec<Message>,
+    /// Unix timestamp of when the session was created.
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 impl Session {
@@ -24,7 +27,13 @@ impl Session {
         Self {
             id: id.into(),
             messages: Vec::new(),
+            created_at: now_secs(),
         }
+    }
+
+    /// The number of messages in the session.
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
     }
 
     /// Save the session to `dir/<id>.json`.
@@ -71,6 +80,14 @@ pub fn default_sessions_dir() -> Result<PathBuf> {
         .join("share")
         .join("forge")
         .join("sessions"))
+}
+
+/// Current unix time in seconds.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

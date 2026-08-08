@@ -33,7 +33,11 @@ impl Tool for WebFetchTool {
 
     fn run(&self, args: &Value, _ctx: &ToolContext) -> Result<ToolResult> {
         let url = string_arg(args, "url")?;
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("forge/0.1 (coding agent)")
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .map_err(|e| crate::error::Error::Tool(format!("build client: {e}")))?;
         let response = match client.get(&url).send() {
             Ok(r) => r,
             Err(e) => return Ok(ToolResult::err(format!("request failed: {e}"))),
