@@ -149,7 +149,11 @@ pub enum Command {
         action: McpAction,
     },
     /// Show the current git diff.
-    Diff,
+    Diff {
+        /// Show only staged changes.
+        #[arg(long)]
+        staged: bool,
+    },
     /// Commit staged changes with an AI-generated or explicit message.
     Commit {
         /// Use this message instead of generating one.
@@ -164,6 +168,22 @@ pub enum Command {
     Test,
     /// Run the project's lint command.
     Lint,
+    /// Run the project's formatter.
+    Format,
+    /// Type-check the project.
+    Check,
+    /// Spawn a standalone sub-agent on a prompt: `agent <prompt>`.
+    Agent {
+        /// The prompt for the sub-agent.
+        prompt: String,
+        /// Override the max number of turns.
+        #[arg(long)]
+        max_turns: Option<usize>,
+    },
+    /// Audit project dependencies.
+    Audit,
+    /// Scan the codebase for TODO/FIXME/HACK markers.
+    Todo,
     /// Launch a headless browser and open a URL.
     Browser {
         /// The URL to open.
@@ -469,6 +489,42 @@ fn run_project_command(config: &Config, step: &str) -> Result<()> {
     }
 }
 
+/// Scan a workspace for TODO/FIXME/HACK markers and print them grouped by file.
+fn scan_todos(root: &std::path::Path) -> Result<()> {
+    use walkdir::WalkDir;
+    let re = regex::Regex::new(r"(?i)\b(TODO|FIXME|HACK)\b").unwrap();
+    let mut found = 0;
+    for entry in WalkDir::new(root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        if path.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy();
+            name == "target" || name == ".git" || name == "node_modules" || name == ".forge"
+        }) {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            for (idx, line) in raw.lines().enumerate() {
+                if line.chars().count() > 500 {
+                    continue; // skip minified/generated single-line files
+                }
+                if re.is_match(line) {
+                    let rel = path.strip_prefix(root).unwrap_or(path);
+                    println!("{}:{}: {}", rel.display(), idx + 1, line.trim());
+                    found += 1;
+                }
+            }
+        }
+    }
+    if found == 0 {
+        println!("no TODO/FIXME/HACK markers found");
+    }
+    Ok(())
+}
+
 /// Print a summary of all commands.
 fn print_help() {
     println!(
@@ -489,9 +545,12 @@ fn print_help() {
          review                                        review the git diff\n\
          mcp call <server> <tool> <args>               call an MCP tool\n\
          mcp add/list/remove                           manage MCP servers\n\
-         diff                                          show the git diff\n\
+         diff [--staged]                                show the git diff\n\
          commit [--all] [message]                      commit changes\n\
-         build / test / lint                           run project commands\n\
+         build / test / lint / format / check          run project commands\n\
+         agent <prompt>                                spawn a sub-agent\n\
+         audit                                         audit dependencies\n\
+         todo                                          scan for TODO/FIXME\n\
          serve [--bind ADDR]                           start the HTTP API\n\
          backup <path> / restore <path>                 backup/restore state\n\
          token <text> [--file]                         count tokens\n\
@@ -858,13 +917,19 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
-        Command::Diff => {
+        Command::Diff { staged } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            wiring.telemetry.record("diff", serde_json::json!({}))?;
+            wiring
+                .telemetry
+                .record("diff", serde_json::json!({ "staged": staged }))?;
             let ws = config.workspace_root();
             let output = std::process::Command::new("git")
-                .args(["diff", "HEAD"])
+                .args(if staged {
+                    ["diff", "--staged"]
+                } else {
+                    ["diff", "HEAD"]
+                })
                 .current_dir(&ws)
                 .output()?;
             let text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -934,6 +999,75 @@ fn dispatch(cli: Cli) -> Result<()> {
         Command::Lint => {
             let config = Config::load()?;
             run_project_command(&config, "lint")
+        }
+        Command::Format => {
+            let config = Config::load()?;
+            run_project_command(&config, "format")
+        }
+        Command::Check => {
+            let config = Config::load()?;
+            run_project_command(&config, "check")
+        }
+        Command::Agent { prompt, max_turns } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("agent", serde_json::json!({}))?;
+            let turns = max_turns.or(config.max_turns).unwrap_or(10);
+            let provider = HttpProvider::new(&config.provider)?;
+            let agent =
+                Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
+            let dir = crate::session::default_sessions_dir()?;
+            let id = format!(
+                "agent-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            );
+            let mut session = crate::session::Session::new(&id);
+            let outcome = agent.run_into(&mut session.messages, &prompt)?;
+            session.save(&dir)?;
+            println!("{}", outcome.final_text);
+            eprintln!(
+                "[forge] {} turn(s), {} tool call(s), session {}",
+                outcome.turns, outcome.tool_calls, session.id
+            );
+            Ok(())
+        }
+        Command::Audit => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("audit", serde_json::json!({}))?;
+            let ws = config.workspace_root();
+            let (bin, args): (&str, &[&str]) = if ws.join("Cargo.toml").exists() {
+                ("cargo", &["audit"])
+            } else if ws.join("package.json").exists() {
+                ("npm", &["audit"])
+            } else {
+                return Err(crate::error::Error::InvalidArgs(
+                    "no Cargo.toml or package.json found to audit".into(),
+                ));
+            };
+            eprintln!("[forge] audit: {bin} {}", args.join(" "));
+            let status = std::process::Command::new(bin)
+                .args(args)
+                .current_dir(&ws)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(crate::error::Error::Tool(format!(
+                    "audit found issues (exit {status})"
+                )))
+            }
+        }
+        Command::Todo => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("todo", serde_json::json!({}))?;
+            let ws = config.workspace_root();
+            scan_todos(&ws)?;
+            Ok(())
         }
         Command::Browser {
             url,

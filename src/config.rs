@@ -40,9 +40,9 @@ pub struct Config {
     pub commands: CommandsConfig,
 }
 
-/// Project command overrides used by `forge build`, `forge test`, and
-/// `forge lint`. Each is an optional shell command; when unset, forge falls
-/// back to a sensible default for the detected project type.
+/// Project command overrides used by `forge build`, `forge test`, `forge lint`,
+/// `forge format`, and `forge check`. Each is an optional shell command; when
+/// unset, forge falls back to a sensible default for the detected project type.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CommandsConfig {
@@ -52,6 +52,10 @@ pub struct CommandsConfig {
     pub test: Option<String>,
     /// Command to lint the project (e.g. `cargo clippy`).
     pub lint: Option<String>,
+    /// Command to format the project (e.g. `cargo fmt`).
+    pub format: Option<String>,
+    /// Command to type-check the project (e.g. `cargo check`).
+    pub check: Option<String>,
 }
 
 impl CommandsConfig {
@@ -62,6 +66,8 @@ impl CommandsConfig {
             "build" => self.build.as_deref(),
             "test" => self.test.as_deref(),
             "lint" => self.lint.as_deref(),
+            "format" => self.format.as_deref(),
+            "check" => self.check.as_deref(),
             _ => None,
         } {
             return cmd.to_string();
@@ -123,6 +129,36 @@ fn default_command(step: &str, workspace: &Path) -> String {
                 "python -m ruff check .".to_string()
             } else {
                 "make lint".to_string()
+            }
+        }
+        "format" => {
+            if cargo {
+                "cargo fmt".to_string()
+            } else if pnpm {
+                "pnpm format".to_string()
+            } else if yarn {
+                "yarn format".to_string()
+            } else if npm {
+                "npx prettier --write .".to_string()
+            } else if python {
+                "python -m ruff format .".to_string()
+            } else {
+                "make format".to_string()
+            }
+        }
+        "check" => {
+            if cargo {
+                "cargo check".to_string()
+            } else if pnpm {
+                "pnpm typecheck".to_string()
+            } else if yarn {
+                "yarn typecheck".to_string()
+            } else if npm {
+                "tsc --noEmit".to_string()
+            } else if python {
+                "python -m mypy .".to_string()
+            } else {
+                "make check".to_string()
             }
         }
         _ => String::new(),
@@ -307,6 +343,8 @@ mod tests {
             cmds.resolve("lint", dir.path()),
             "cargo clippy --all-targets"
         );
+        assert_eq!(cmds.resolve("format", dir.path()), "cargo fmt");
+        assert_eq!(cmds.resolve("check", dir.path()), "cargo check");
     }
 
     #[test]
@@ -317,6 +355,7 @@ mod tests {
         assert_eq!(cmds.resolve("build", dir.path()), "npm run build");
         assert_eq!(cmds.resolve("test", dir.path()), "npm test");
         assert_eq!(cmds.resolve("lint", dir.path()), "npm run lint");
+        assert_eq!(cmds.resolve("check", dir.path()), "tsc --noEmit");
     }
 
     #[test]
@@ -325,9 +364,11 @@ mod tests {
         fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
         let cmds = CommandsConfig {
             build: Some("make build".into()),
+            format: Some("make format".into()),
             ..Default::default()
         };
         assert_eq!(cmds.resolve("build", dir.path()), "make build");
         assert_eq!(cmds.resolve("test", dir.path()), "cargo test");
+        assert_eq!(cmds.resolve("format", dir.path()), "make format");
     }
 }
