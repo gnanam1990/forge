@@ -394,3 +394,99 @@ impl Tool for GitAddTool {
         git(ctx, &cmd)
     }
 }
+
+/// `git_rebase` — rebase the current branch.
+#[derive(Default)]
+pub struct GitRebaseTool;
+
+impl GitRebaseTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for GitRebaseTool {
+    fn name(&self) -> &str {
+        "git_rebase"
+    }
+    fn description(&self) -> &str {
+        "Rebase the current branch onto another branch. Args: {\"branch\": string}."
+    }
+    fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {
+        let branch = string_arg(args, "branch")?;
+        git(ctx, &["rebase", &branch])
+    }
+}
+
+/// `git_cherry_pick` — apply a commit onto the current branch.
+#[derive(Default)]
+pub struct GitCherryPickTool;
+
+impl GitCherryPickTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for GitCherryPickTool {
+    fn name(&self) -> &str {
+        "git_cherry_pick"
+    }
+    fn description(&self) -> &str {
+        "Apply a commit onto the current branch. Args: {\"commit\": string}."
+    }
+    fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {
+        let commit = string_arg(args, "commit")?;
+        git(ctx, &["cherry-pick", &commit])
+    }
+}
+
+/// `git_clean` — remove untracked files.
+#[derive(Default)]
+pub struct GitCleanTool;
+
+impl GitCleanTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for GitCleanTool {
+    fn name(&self) -> &str {
+        "git_clean"
+    }
+    fn description(&self) -> &str {
+        "Remove untracked files. Args: {\"force\": bool (optional, default false = dry run)}."
+    }
+    fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        if force {
+            git(ctx, &["clean", "-f"])
+        } else {
+            git(ctx, &["clean", "-n"])
+        }
+    }
+}
+
+/// `git_blame` — show who last changed each line of a file.
+#[derive(Default)]
+pub struct GitBlameTool;
+
+impl GitBlameTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for GitBlameTool {
+    fn name(&self) -> &str {
+        "git_blame"
+    }
+    fn description(&self) -> &str {
+        "Show who last changed each line of a file. Args: {\"file\": string}."
+    }
+    fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {
+        let file = string_arg(args, "file")?;
+        git(ctx, &["blame", "--", &file])
+    }
+}

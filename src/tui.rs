@@ -75,7 +75,7 @@ impl App {
             match prompt.as_str() {
                 "/help" => {
                     self.messages.push(
-                        "commands: /help, /model, /tools, /memory, /sessions, /clear, /exit".into(),
+                        "commands: /help, /model, /tools, /memory, /context, /stats, /sessions, /clear, /exit".into(),
                     );
                 }
                 "/model" => {
@@ -97,6 +97,34 @@ impl App {
                     } else {
                         for (k, v) in facts {
                             self.messages.push(format!("{k}: {v}"));
+                        }
+                    }
+                }
+                "/context" => {
+                    self.messages.push(format!(
+                        "session {}: {} message(s), ~{} token(s)",
+                        self.session.id,
+                        self.session.message_count(),
+                        self.session.token_usage()
+                    ));
+                }
+                "/stats" => {
+                    let path = crate::telemetry::default_telemetry_path().unwrap_or_default();
+                    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+                    let mut counts: std::collections::BTreeMap<String, usize> =
+                        std::collections::BTreeMap::new();
+                    for line in raw.lines() {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                            if let Some(event) = value.get("event").and_then(|e| e.as_str()) {
+                                *counts.entry(event.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                    if counts.is_empty() {
+                        self.messages.push("(no telemetry data)".into());
+                    } else {
+                        for (event, count) in counts {
+                            self.messages.push(format!("{event}: {count}"));
                         }
                     }
                 }

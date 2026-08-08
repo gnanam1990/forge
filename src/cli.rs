@@ -227,6 +227,21 @@ pub enum Command {
         /// Print the visible text of the page.
         #[arg(long)]
         text: bool,
+        /// Go back in history.
+        #[arg(long)]
+        back: bool,
+        /// Go forward in history.
+        #[arg(long)]
+        forward: bool,
+        /// Reload the page.
+        #[arg(long)]
+        reload: bool,
+        /// Print the page title.
+        #[arg(long)]
+        title: bool,
+        /// Print the current URL.
+        #[arg(long)]
+        current_url: bool,
     },
     /// Desktop control: `screenshot <path>`, `click <x> <y>`, `type <text>`.
     Desktop {
@@ -436,6 +451,11 @@ pub enum ConfigAction {
         /// The output file path.
         path: PathBuf,
     },
+    /// Import a config from a JSON file.
+    Import {
+        /// The input file path.
+        path: PathBuf,
+    },
 }
 
 /// Subcommands for `forge telemetry`.
@@ -456,6 +476,8 @@ pub enum TelemetryAction {
     Stats,
     /// Print the path to the telemetry log.
     Path,
+    /// Rotate the telemetry log (archive the current one and start fresh).
+    Rotate,
 }
 
 /// Subcommands for `forge model`.
@@ -633,6 +655,9 @@ pub enum GitAction {
         /// Custom output format (e.g. "%h %s").
         #[arg(long)]
         format: Option<String>,
+        /// Show the commit graph.
+        #[arg(long)]
+        graph: bool,
     },
     /// List branches.
     Branch,
@@ -1411,6 +1436,23 @@ fn dispatch(cli: Cli) -> Result<()> {
                 "count" => {
                     println!("{}", memory.all().len());
                 }
+                "rename" => {
+                    let old = key.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("old key required".into())
+                    })?;
+                    let new = value.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("new key required".into())
+                    })?;
+                    match memory.recall(&old).map(str::to_string) {
+                        Some(v) => {
+                            memory.forget(&old);
+                            memory.remember(new.clone(), v);
+                            memory.save()?;
+                            println!("renamed {old} to {new}");
+                        }
+                        None => println!("no fact named {old}"),
+                    }
+                }
                 "remove" => {
                     let key =
                         key.ok_or_else(|| crate::error::Error::InvalidArgs("key required".into()))?;
@@ -1775,6 +1817,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             screenshot,
             wait,
             text,
+            back,
+            forward,
+            reload,
+            title,
+            current_url,
         } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
@@ -1786,6 +1833,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("opened {url} (target {})", target.id);
             if let Some(ms) = wait {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+            if back {
+                browser.back(&target)?;
+                println!("went back");
+            }
+            if forward {
+                browser.forward(&target)?;
+                println!("went forward");
+            }
+            if reload {
+                browser.reload(&target)?;
+                println!("reloaded");
             }
             if let Some(js) = eval {
                 let result = browser.evaluate(&target, &js)?;
@@ -1820,6 +1879,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             if text {
                 let body_text = browser.get_text(&target)?;
                 println!("page text:\n{body_text}");
+            }
+            if title {
+                println!("title: {}", browser.get_title(&target)?);
+            }
+            if current_url {
+                println!("url: {}", browser.get_url(&target)?);
             }
             for tab in browser.list()? {
                 println!("tab: {tab}");
@@ -2039,6 +2104,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Commands) => "commands",
                 Some(ConfigAction::List) => "list",
                 Some(ConfigAction::Export { .. }) => "export",
+                Some(ConfigAction::Import { .. }) => "import",
             };
             wiring
                 .telemetry
@@ -2265,6 +2331,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                     std::fs::write(&path, raw)?;
                     println!("exported config to {}", path.display());
                 }
+                Some(ConfigAction::Import { path }) => {
+                    let raw = std::fs::read_to_string(&path)?;
+                    let imported: Config = serde_json::from_str(&raw).map_err(|e| {
+                        crate::error::Error::InvalidArgs(format!("parse {}: {e}", path.display()))
+                    })?;
+                    let dest = crate::config::config_path()?;
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&dest, serde_json::to_string_pretty(&imported)?)?;
+                    println!("imported config from {}", path.display());
+                }
             }
             Ok(())
         }
@@ -2443,6 +2521,21 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             TelemetryAction::Path => {
                 println!("{}", crate::telemetry::default_telemetry_path()?.display());
+                Ok(())
+            }
+            TelemetryAction::Rotate => {
+                let path = crate::telemetry::default_telemetry_path()?;
+                if path.exists() {
+                    let stamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let archive = path.with_extension(format!("{stamp}.jsonl"));
+                    std::fs::rename(&path, &archive)?;
+                    println!("rotated telemetry to {}", archive.display());
+                } else {
+                    println!("no telemetry log to rotate");
+                }
                 Ok(())
             }
         },
@@ -3076,6 +3169,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     since,
                     all,
                     format,
+                    graph,
                 } => {
                     let limit_str = limit.to_string();
                     let mut args: Vec<String> = vec![
@@ -3086,6 +3180,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                     ];
                     if all {
                         args.push("--all".into());
+                    }
+                    if graph {
+                        args.push("--graph".into());
                     }
                     if stat {
                         args.push("--stat".into());

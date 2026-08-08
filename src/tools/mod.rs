@@ -159,6 +159,10 @@ impl Registry {
         registry.register(Box::new(git_ops::GitPullTool::new()));
         registry.register(Box::new(git_ops::GitFetchTool::new()));
         registry.register(Box::new(git_ops::GitAddTool::new()));
+        registry.register(Box::new(git_ops::GitRebaseTool::new()));
+        registry.register(Box::new(git_ops::GitCherryPickTool::new()));
+        registry.register(Box::new(git_ops::GitCleanTool::new()));
+        registry.register(Box::new(git_ops::GitBlameTool::new()));
         registry.register(Box::new(get_env::GetEnvTool::new()));
         registry.register(Box::new(get_cwd::GetCwdTool::new()));
         registry.register(Box::new(apply_patch::ApplyPatchTool::new()));

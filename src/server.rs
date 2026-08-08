@@ -326,6 +326,43 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
                 json!({ "plugins": plugins }).to_string(),
             ))
         }
+        ("GET", "/hooks") => {
+            let hooks: Vec<serde_json::Value> = config
+                .hooks
+                .iter()
+                .map(|h| {
+                    json!({
+                        "name": h.name,
+                        "before": h.before,
+                        "after": h.after,
+                    })
+                })
+                .collect();
+            Ok((
+                200,
+                "application/json",
+                json!({ "hooks": hooks }).to_string(),
+            ))
+        }
+        ("GET", "/permission") => {
+            let registry = crate::tools::Registry::builtin();
+            let perms: Vec<serde_json::Value> = registry
+                .names()
+                .iter()
+                .map(|name| {
+                    let p = registry
+                        .get(name)
+                        .map(|t| t.permission())
+                        .unwrap_or(crate::permission::Permission::Allow);
+                    json!({ "tool": name, "permission": format!("{p:?}") })
+                })
+                .collect();
+            Ok((
+                200,
+                "application/json",
+                json!({ "permissions": perms }).to_string(),
+            ))
+        }
         ("POST", "/memory/forget") => {
             let value: serde_json::Value = serde_json::from_str(&req.body)
                 .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
@@ -824,5 +861,32 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["id"], "sess-ctx");
         std::env::remove_var("FORGE_SESSIONS_DIR");
+    }
+
+    #[test]
+    fn routes_hooks() {
+        let req = Request {
+            method: "GET".into(),
+            path: "/hooks".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["hooks"].is_array());
+    }
+
+    #[test]
+    fn routes_permission() {
+        let req = Request {
+            method: "GET".into(),
+            path: "/permission".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let perms = v["permissions"].as_array().unwrap();
+        assert!(perms.iter().any(|p| p["tool"] == "read_file"));
     }
 }
