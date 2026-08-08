@@ -374,6 +374,31 @@ impl McpClient {
             .unwrap_or("unknown")
             .to_string())
     }
+
+    /// The client info forge sent during initialization.
+    pub fn client_info(&self) -> String {
+        "forge 0.1.0".to_string()
+    }
+
+    /// The server's capabilities as a pretty JSON string.
+    pub fn server_capabilities(&self) -> String {
+        self.capabilities()
+    }
+
+    /// List the tool names (alias for `list_tools`).
+    pub fn tool_list(&mut self) -> Result<Vec<String>> {
+        self.list_tools()
+    }
+
+    /// List the resource URIs (alias for `list_resources`).
+    pub fn resource_list(&mut self) -> Result<Vec<String>> {
+        self.list_resources()
+    }
+
+    /// List the prompt names (alias for `list_prompts`).
+    pub fn prompt_list(&mut self) -> Result<Vec<String>> {
+        self.list_prompts()
+    }
 }
 
 impl Drop for McpClient {

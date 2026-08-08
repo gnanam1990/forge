@@ -793,6 +793,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                     registry.load_dir(&dir)?;
                     println!("added plugin from {file}");
                 }
+                "docs" => {
+                    println!(
+                        "forge plugins\n\n\
+                         A plugin is a JSON file in the plugins directory:\n\
+                         {{\n  \"name\": \"my-plugin\",\n  \"tools\": [\n    {{\n      \"name\": \"my_tool\",\n      \
+                         \"command\": \"my-command\",\n      \"description\": \"does something\"\n    }}\n  ]\n}}\n\n\
+                         Commands:\n  forge plugin list              list plugins\n  \
+                         forge plugin enable <name>    enable a plugin\n  \
+                         forge plugin disable <name>   disable a plugin\n  \
+                         forge plugin add <file>      add a plugin file"
+                    );
+                }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
                         "unknown plugin action {other}"
@@ -896,6 +908,31 @@ fn dispatch(cli: Cli) -> Result<()> {
                     config.provider.model = Some(model.clone());
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                     println!("set model to {model}");
+                }
+                "list" => {
+                    println!(
+                        "active: {}",
+                        config.provider.model.as_deref().unwrap_or("(none)")
+                    );
+                    for (i, provider) in config.saved_providers.iter().enumerate() {
+                        println!(
+                            "  {i}: {} ({})",
+                            provider.model.as_deref().unwrap_or("(unnamed)"),
+                            provider.base_url.as_deref().unwrap_or("(default)")
+                        );
+                    }
+                }
+                "add" => {
+                    let model = model
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("model required".into()))?;
+                    let path = crate::config::config_path()?;
+                    let mut config = config;
+                    config.saved_providers.push(crate::config::ProviderConfig {
+                        model: Some(model.clone()),
+                        ..Default::default()
+                    });
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("added provider {model}");
                 }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(

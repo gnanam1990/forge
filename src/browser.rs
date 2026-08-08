@@ -470,6 +470,92 @@ impl Browser {
         self.evaluate(target, &expr)
     }
 
+    /// Evaluate a JS expression against the first element matching a selector.
+    fn element_prop(&self, target: &Target, selector: &str, body: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); if (!e) return ''; {body} }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get all attributes of the first element matching a selector.
+    pub fn get_all_attributes(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(
+            target,
+            selector,
+            "return Array.from(e.attributes).map(a => a.name + '=' + a.value).join('\\n');",
+        )
+    }
+
+    /// Get the text content of the first element matching a selector.
+    pub fn get_text_content(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return e.textContent || '';")
+    }
+
+    /// Get the data-* attributes of the first element matching a selector.
+    pub fn get_data_attributes(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(
+            target,
+            selector,
+            "return Array.from(e.attributes).filter(a => a.name.startsWith('data-')).map(a => a.name + '=' + a.value).join('\\n');",
+        )
+    }
+
+    /// Get the ARIA attributes of the first element matching a selector.
+    pub fn get_aria(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(
+            target,
+            selector,
+            "return Array.from(e.attributes).filter(a => a.name.startsWith('aria-')).map(a => a.name + '=' + a.value).join('\\n');",
+        )
+    }
+
+    /// Get the ARIA role of the first element matching a selector.
+    pub fn get_role(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return e.getAttribute('role') || '';")
+    }
+
+    /// Get whether the first element matching a selector is selected.
+    pub fn get_selected(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return String(e.selected);")
+    }
+
+    /// Get whether the first element matching a selector is disabled.
+    pub fn get_disabled(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return String(e.disabled);")
+    }
+
+    /// Get whether the first element matching a selector is required.
+    pub fn get_required(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return String(e.required);")
+    }
+
+    /// Get whether the first element matching a selector is read-only.
+    pub fn get_readonly(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return String(e.readOnly);")
+    }
+
+    /// Get the name of the first element matching a selector.
+    pub fn get_name(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return e.name || '';")
+    }
+
+    /// Get the type of the first element matching a selector.
+    pub fn get_type(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return e.type || '';")
+    }
+
+    /// Get the id of the first element matching a selector.
+    pub fn get_id(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return e.id || '';")
+    }
+
+    /// Get the tag name of the first element matching a selector.
+    pub fn get_tag(&self, target: &Target, selector: &str) -> Result<String> {
+        self.element_prop(target, selector, "return e.tagName || '';")
+    }
+
     /// List the form input fields on the page.
     pub fn get_form_fields(&self, target: &Target) -> Result<String> {
         self.evaluate(

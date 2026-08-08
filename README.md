@@ -69,7 +69,9 @@ built to be simple, testable, and easy to extend.
 - **`forge info`** — prints version, workspace, model, tool and session counts.
 - **`forge version` / `forge models` / `forge help` / `forge docs`** — version,
   model catalog, command summary, and a quick-start guide.
-- **`forge provider`** — show or set the provider model.
+- **`forge provider`** — show, set, list, or add providers (multi-model support).
+- **`forge plugin docs`** — a guide to the plugin format and commands.
+- **TUI command palette** — `/help`, `/sessions`, `/exit` inside the chat UI.
 - **`forge run --file`** — run a prompt read from a file.
 - **Session export/import** — `forge export <id> <path>` and `forge import <path>`.
 - **`forge init`** — scaffolds a project (config, README, src, .forge).

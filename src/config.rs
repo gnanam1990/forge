@@ -19,6 +19,9 @@ pub struct Config {
     pub workspace: Option<PathBuf>,
     /// Provider settings for the model backend.
     pub provider: ProviderConfig,
+    /// Additional saved providers (for switching models).
+    #[serde(default)]
+    pub saved_providers: Vec<ProviderConfig>,
     /// Maximum number of agent turns before the loop stops.
     pub max_turns: Option<usize>,
     /// MCP servers to auto-register at startup.

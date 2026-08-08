@@ -63,6 +63,33 @@ impl App {
         self.input.clear();
         self.history.push(prompt.clone());
         self.history_index = None;
+        // Command palette: lines starting with `/` are commands, not prompts.
+        if prompt.starts_with('/') {
+            self.messages.push(format!("> {prompt}"));
+            match prompt.as_str() {
+                "/help" => {
+                    self.messages
+                        .push("commands: /help, /sessions, /exit".into());
+                }
+                "/sessions" => {
+                    let ids = Session::list(&self.sessions_dir).unwrap_or_default();
+                    if ids.is_empty() {
+                        self.messages.push("no saved sessions".into());
+                    } else {
+                        self.messages.push(ids.join("\n"));
+                    }
+                }
+                "/exit" | "/quit" => {
+                    self.status = "bye".into();
+                    return Err(crate::error::Error::Agent("exit".into()));
+                }
+                other => {
+                    self.messages.push(format!("unknown command: {other}"));
+                }
+            }
+            self.status = "ready".into();
+            return Ok(());
+        }
         self.messages.push(format!("> {prompt}"));
         self.status = "running…".into();
         match self.agent.run_into(&mut self.session.messages, &prompt) {
