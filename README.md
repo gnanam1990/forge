@@ -39,19 +39,22 @@ built to be simple, testable, and easy to extend.
   heuristic fallback.
 - **MCP** — a Model Context Protocol client over stdio, with MCP tools
   registered into the agent's tool registry, plus resources, prompts, ping,
-  notifications, and sampling support.
+  notifications, sampling, logging, roots, and completions support.
 - **`forge config`** — prints the current config with the API key redacted.
 - **`forge plugins`** — lists plugins loaded from the plugins directory.
 - **Session listing** — `forge sessions` shows message counts and timestamps.
 - **Search index invalidation** — the code index rebuilds when sources change.
-- **Plugins** — a plugin bundle system, plus loading command-backed plugins
-  from a directory of JSON files.
+- **Plugins** — a plugin bundle system, a plugin registry that tracks and
+  enables/disables plugins, plus loading command-backed plugins from a
+  directory of JSON files.
 - **Telemetry** — a minimal usage tracker that appends JSON events to a file.
 - **Memory** — a durable cross-session fact store, wired into the agent loop via
   `remember`/`recall` tools.
 - **Browser automation** — CDP headless Chrome with navigate, back, forward,
-  reload, click, type, screenshot, get_text, get_title, and `Runtime.evaluate`
-  over the DevTools WebSocket.
+  reload, click, type, screenshot, get_text, get_title, get_url, get_html,
+  get_cookies, set_cookie, get/set_local_storage, get_performance, scroll,
+  wait_for_load, wait_for_selector, get_element, and `Runtime.evaluate` over
+  the DevTools WebSocket.
 - **Computer/desktop use** — screenshot + coordinate control (macOS).
 - **SSH** — run commands on a remote host.
 - **Sandbox** — command isolation with configurable network/file restrictions.

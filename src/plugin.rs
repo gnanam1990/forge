@@ -2,7 +2,7 @@
 //! agent. Plugins let third parties extend forge without touching core. Plugins
 //! can be built in code or loaded from a directory of JSON files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -116,6 +116,150 @@ pub fn load_plugins_from_dir(dir: &Path, registry: &mut Registry) -> crate::erro
         }
     }
     Ok(count)
+}
+
+/// A tracked plugin entry in the registry.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PluginEntry {
+    pub name: String,
+    pub enabled: bool,
+    pub tools: Vec<String>,
+}
+
+/// A registry that tracks plugins, their enabled state, and their tools. State
+/// is persisted so enable/disable survives restarts.
+#[derive(Debug, Clone, Default)]
+pub struct PluginRegistry {
+    plugins: Vec<PluginEntry>,
+    state_path: PathBuf,
+}
+
+impl PluginRegistry {
+    pub fn new(state_path: PathBuf) -> Self {
+        let mut registry = Self {
+            plugins: Vec::new(),
+            state_path,
+        };
+        registry.load_state();
+        registry
+    }
+
+    /// Load plugin files from a directory, respecting the persisted enabled
+    /// state. Returns the number of tools registered.
+    pub fn load_dir(&mut self, dir: &Path) -> crate::error::Result<usize> {
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let mut count = 0usize;
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&path)?;
+            let plugin: PluginFile = serde_json::from_str(&raw).map_err(|e| {
+                crate::error::Error::Config(format!("parse {}: {e}", path.display()))
+            })?;
+            let enabled = self
+                .plugins
+                .iter()
+                .find(|p| p.name == plugin.name)
+                .map(|p| p.enabled)
+                .unwrap_or(true);
+            let tools: Vec<String> = plugin.tools.iter().map(|t| t.name.clone()).collect();
+            self.plugins.retain(|p| p.name != plugin.name);
+            self.plugins.push(PluginEntry {
+                name: plugin.name,
+                enabled,
+                tools: tools.clone(),
+            });
+            count += tools.len();
+        }
+        self.save_state();
+        Ok(count)
+    }
+
+    /// Register the enabled plugins' tools into a registry.
+    pub fn register_into(&self, registry: &mut Registry, dir: &Path) -> crate::error::Result<()> {
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&path)?;
+            let plugin: PluginFile = serde_json::from_str(&raw).map_err(|e| {
+                crate::error::Error::Config(format!("parse {}: {e}", path.display()))
+            })?;
+            let enabled = self
+                .plugins
+                .iter()
+                .find(|p| p.name == plugin.name)
+                .map(|p| p.enabled)
+                .unwrap_or(true);
+            if !enabled {
+                continue;
+            }
+            for tool in plugin.tools {
+                registry.register(Box::new(CommandTool {
+                    name: tool.name,
+                    command: tool.command,
+                    description: tool.description,
+                }));
+            }
+        }
+        Ok(())
+    }
+
+    /// List the tracked plugins.
+    pub fn list(&self) -> &[PluginEntry] {
+        &self.plugins
+    }
+
+    /// Enable a plugin by name.
+    pub fn enable(&mut self, name: &str) -> crate::error::Result<()> {
+        let entry = self
+            .plugins
+            .iter_mut()
+            .find(|p| p.name == name)
+            .ok_or_else(|| crate::error::Error::Config(format!("unknown plugin {name}")))?;
+        entry.enabled = true;
+        self.save_state();
+        Ok(())
+    }
+
+    /// Disable a plugin by name.
+    pub fn disable(&mut self, name: &str) -> crate::error::Result<()> {
+        let entry = self
+            .plugins
+            .iter_mut()
+            .find(|p| p.name == name)
+            .ok_or_else(|| crate::error::Error::Config(format!("unknown plugin {name}")))?;
+        entry.enabled = false;
+        self.save_state();
+        Ok(())
+    }
+
+    fn load_state(&mut self) {
+        if let Ok(raw) = std::fs::read_to_string(&self.state_path) {
+            if let Ok(plugins) = serde_json::from_str::<Vec<PluginEntry>>(&raw) {
+                self.plugins = plugins;
+            }
+        }
+    }
+
+    fn save_state(&self) {
+        if let Some(parent) = self.state_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(raw) = serde_json::to_string(&self.plugins) {
+            let _ = std::fs::write(&self.state_path, raw);
+        }
+    }
 }
 
 #[cfg(test)]

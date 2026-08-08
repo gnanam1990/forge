@@ -330,6 +330,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Cron { file, forever } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let raw = std::fs::read_to_string(&file)?;
             let jobs: Vec<crate::cron::Job> = serde_json::from_str(&raw).map_err(|e| {
                 crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
@@ -338,6 +340,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             for job in jobs {
                 scheduler.add(job);
             }
+            wiring.telemetry.record(
+                "cron",
+                serde_json::json!({
+                    "jobs": scheduler.jobs().len(),
+                    "forever": forever,
+                }),
+            )?;
             if forever {
                 scheduler.run_forever()?;
             } else {
@@ -348,7 +357,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Review => {
-            let workspace = Config::load()?.workspace_root();
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            let workspace = config.workspace_root();
             let diff = std::process::Command::new("git")
                 .args(["diff"])
                 .current_dir(&workspace)
@@ -356,6 +367,12 @@ fn dispatch(cli: Cli) -> Result<()> {
                 .map_err(|e| crate::error::Error::Agent(format!("git diff: {e}")))?;
             let diff_text = String::from_utf8_lossy(&diff.stdout).into_owned();
             let review = crate::review::review_diff(&diff_text);
+            wiring.telemetry.record(
+                "review",
+                serde_json::json!({
+                    "findings": review.findings.len(),
+                }),
+            )?;
             if review.is_clean() {
                 println!("no issues found");
             } else {
@@ -371,12 +388,17 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Mcp { server, tool, args } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let mut client = crate::mcp::McpClient::connect(&server, &[])?;
             let tools = client.list_tools()?;
             eprintln!("[forge] MCP tools: {}", tools.join(", "));
             let args: serde_json::Value = serde_json::from_str(&args)
                 .map_err(|e| crate::error::Error::InvalidArgs(format!("bad args: {e}")))?;
             let output = client.call_tool(&tool, args)?;
+            wiring
+                .telemetry
+                .record("mcp", serde_json::json!({ "tool": tool }))?;
             println!("{output}");
             Ok(())
         }
@@ -387,8 +409,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             r#type,
             screenshot,
         } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let browser = crate::browser::Browser::launch()?;
             let target = browser.open(&url)?;
+            wiring
+                .telemetry
+                .record("browser", serde_json::json!({ "url": url }))?;
             println!("opened {url} (target {})", target.id);
             if let Some(js) = eval {
                 let result = browser.evaluate(&target, &js)?;
@@ -426,7 +453,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Desktop { action, args } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let desktop = crate::desktop::Desktop::new();
+            wiring
+                .telemetry
+                .record("desktop", serde_json::json!({ "action": action }))?;
             match action.as_str() {
                 "screenshot" => {
                     let path = args.first().ok_or_else(|| {
@@ -592,6 +624,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Effort { level } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let effort = crate::posture::Effort::parse(&level).ok_or_else(|| {
                 crate::error::Error::InvalidArgs(format!(
                     "unknown effort {level}; expected auto, balanced, thorough, or zeromaxing"
@@ -599,6 +633,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             })?;
             let posture = crate::posture::Posture::from_effort(effort);
             let auto = crate::posture::Posture::from_effort(crate::posture::Effort::Auto);
+            wiring
+                .telemetry
+                .record("effort", serde_json::json!({ "effort": level }))?;
             println!("effort: {}", posture.effort.as_str());
             println!("delta: {}", posture.delta(&auto));
             Ok(())

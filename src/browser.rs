@@ -169,6 +169,101 @@ impl Browser {
         }
     }
 
+    /// Wait until a CSS selector matches an element, up to a timeout.
+    pub fn wait_for_selector(
+        &self,
+        target: &Target,
+        selector: &str,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let expr = format!(
+            "!!document.querySelector({})",
+            serde_json::to_string(selector)?
+        );
+        loop {
+            let found = self.evaluate(target, &expr).unwrap_or_default();
+            if found == "true" {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Agent(format!(
+                    "selector {selector} not found in time"
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// Get the text of the first element matching a CSS selector.
+    pub fn get_element(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? e.innerText : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Scroll the page by a delta.
+    pub fn scroll(&self, target: &Target, dx: i32, dy: i32) -> Result<()> {
+        let expr = format!("window.scrollBy({dx}, {dy})");
+        self.evaluate(target, &expr)?;
+        Ok(())
+    }
+
+    /// Get the page's cookies.
+    pub fn get_cookies(&self, target: &Target) -> Result<String> {
+        let result = self.send_command(target, "Network.getCookies", json!({}))?;
+        let cookies = result
+            .get("cookies")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut lines = Vec::new();
+        for cookie in cookies {
+            let name = cookie.get("name").and_then(Value::as_str).unwrap_or("");
+            let value = cookie.get("value").and_then(Value::as_str).unwrap_or("");
+            lines.push(format!("{name}={value}"));
+        }
+        Ok(lines.join("\n"))
+    }
+
+    /// Set a cookie on the page.
+    pub fn set_cookie(&self, target: &Target, name: &str, value: &str, url: &str) -> Result<()> {
+        self.send_command(
+            target,
+            "Network.setCookie",
+            json!({
+                "name": name, "value": value, "url": url
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Get the page's localStorage as JSON.
+    pub fn get_local_storage(&self, target: &Target) -> Result<String> {
+        self.evaluate(target, "JSON.stringify(localStorage)")
+    }
+
+    /// Set a localStorage key.
+    pub fn set_local_storage(&self, target: &Target, key: &str, value: &str) -> Result<()> {
+        let expr = format!(
+            "localStorage.setItem({}, {})",
+            serde_json::to_string(key)?,
+            serde_json::to_string(value)?
+        );
+        self.evaluate(target, &expr)?;
+        Ok(())
+    }
+
+    /// Get navigation performance metrics as JSON.
+    pub fn get_performance(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "JSON.stringify(performance.getEntriesByType('navigation')[0] || {})",
+        )
+    }
+
     /// Click at a coordinate in the target.
     pub fn click(&self, target: &Target, x: i32, y: i32) -> Result<()> {
         self.send_command(

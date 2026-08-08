@@ -192,6 +192,42 @@ impl McpClient {
             .map(str::to_string)
             .ok_or_else(|| Error::Provider("no sample text".into()))
     }
+
+    /// Set the server's log level.
+    pub fn set_log_level(&mut self, level: &str) -> Result<()> {
+        self.request("logging/setLevel", json!({ "level": level }))?;
+        Ok(())
+    }
+
+    /// List the roots the server exposes.
+    pub fn list_roots(&mut self) -> Result<Vec<String>> {
+        let result = self.request("roots/list", json!({}))?;
+        let roots = result
+            .get("roots")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(roots
+            .iter()
+            .filter_map(|r| r.get("uri").and_then(Value::as_str).map(str::to_string))
+            .collect())
+    }
+
+    /// Get completions for a reference.
+    pub fn complete(&mut self, reference: Value) -> Result<Vec<String>> {
+        let result = self.request("completion/complete", json!({ "ref": reference }))?;
+        let values = result
+            .get("completion")
+            .and_then(|c| c.get("values"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect())
+    }
 }
 
 impl Drop for McpClient {
