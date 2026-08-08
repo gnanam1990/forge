@@ -76,6 +76,17 @@ impl Memory {
         serde_json::to_string_pretty(&self.facts)
             .map_err(|e| Error::Config(format!("serialize memory: {e}")))
     }
+
+    /// Import facts from a JSON object string, merging into the current store.
+    pub fn import(&mut self, json: &str) -> Result<usize> {
+        let facts: HashMap<String, String> = serde_json::from_str(json)
+            .map_err(|e| Error::Config(format!("parse memory import: {e}")))?;
+        let count = facts.len();
+        for (k, v) in facts {
+            self.facts.insert(k, v);
+        }
+        Ok(count)
+    }
 }
 
 /// The default memory file: `~/.local/share/forge/memory.json`.
@@ -183,5 +194,15 @@ mod tests {
         let parsed: HashMap<String, String> = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.get("lang").map(String::as_str), Some("rust"));
         assert_eq!(parsed.get("editor").map(String::as_str), Some("vim"));
+    }
+
+    #[test]
+    fn import_merges_facts() {
+        let mut memory = Memory::new();
+        memory.remember("lang", "rust");
+        let count = memory.import(r#"{"editor":"vim","lang":"go"}"#).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(memory.recall("editor"), Some("vim"));
+        assert_eq!(memory.recall("lang"), Some("go"));
     }
 }

@@ -39,6 +39,9 @@ pub enum Command {
         /// Override the max number of turns.
         #[arg(long)]
         max_turns: Option<usize>,
+        /// Re-run the agent whenever files in the workspace change.
+        #[arg(long)]
+        watch: bool,
     },
     /// Print the version.
     Version,
@@ -156,6 +159,9 @@ pub enum Command {
         /// Show diff statistics instead of the full diff.
         #[arg(long)]
         stat: bool,
+        /// List only the names of changed files.
+        #[arg(long)]
+        name_only: bool,
     },
     /// Commit staged changes with an AI-generated or explicit message.
     Commit {
@@ -401,6 +407,8 @@ pub enum ConfigAction {
         /// The value.
         value: String,
     },
+    /// Validate the config file and report any problems.
+    Validate,
 }
 
 /// Subcommands for `forge telemetry`.
@@ -415,6 +423,8 @@ pub enum TelemetryAction {
         /// The output file path.
         path: PathBuf,
     },
+    /// Clear the telemetry log.
+    Clear,
 }
 
 /// Subcommands for `forge model`.
@@ -438,6 +448,9 @@ pub enum GitAction {
         /// Show diff statistics for each commit.
         #[arg(long)]
         stat: bool,
+        /// Filter commits by author.
+        #[arg(long)]
+        author: Option<String>,
     },
     /// List branches.
     Branch,
@@ -1078,6 +1091,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                     std::fs::write(&path, json)?;
                     println!("exported memory to {path}");
                 }
+                "import" => {
+                    let path = key
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("path required".into()))?;
+                    let raw = std::fs::read_to_string(&path)?;
+                    let count = memory.import(&raw)?;
+                    memory.save()?;
+                    println!("imported {count} fact(s) from {path}");
+                }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
                         "unknown action {other}"
@@ -1217,12 +1238,16 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
-        Command::Diff { staged, stat } => {
+        Command::Diff {
+            staged,
+            stat,
+            name_only,
+        } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
             wiring.telemetry.record(
                 "diff",
-                serde_json::json!({ "staged": staged, "stat": stat }),
+                serde_json::json!({ "staged": staged, "stat": stat, "name_only": name_only }),
             )?;
             let ws = config.workspace_root();
             let base: &[&str] = if staged {
@@ -1230,11 +1255,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             } else {
                 &["diff", "HEAD"]
             };
-            let args: Vec<&str> = if stat {
-                base.iter().copied().chain(["--stat"]).collect()
-            } else {
-                base.to_vec()
-            };
+            let mut args: Vec<&str> = base.to_vec();
+            if stat {
+                args.push("--stat");
+            }
+            if name_only {
+                args.push("--name-only");
+            }
             let output = std::process::Command::new("git")
                 .args(&args)
                 .current_dir(&ws)
@@ -1643,6 +1670,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Reset) => "reset",
                 Some(ConfigAction::Get { .. }) => "get",
                 Some(ConfigAction::Set { .. }) => "set",
+                Some(ConfigAction::Validate) => "validate",
             };
             wiring
                 .telemetry
@@ -1742,6 +1770,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                     println!("set {key} = {value}");
+                }
+                Some(ConfigAction::Validate) => {
+                    config.validate()?;
+                    println!("config valid");
                 }
             }
             Ok(())
@@ -1848,6 +1880,15 @@ fn dispatch(cli: Cli) -> Result<()> {
                 }
                 std::fs::write(&path, raw)?;
                 println!("exported telemetry to {}", path.display());
+                Ok(())
+            }
+            TelemetryAction::Clear => {
+                let path = crate::telemetry::default_telemetry_path()?;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, "")?;
+                println!("telemetry cleared");
                 Ok(())
             }
         },
@@ -2390,11 +2431,24 @@ fn dispatch(cli: Cli) -> Result<()> {
             wiring.telemetry.record("git", serde_json::json!({}))?;
             let ws = config.workspace_root();
             match action {
-                GitAction::Log { limit, stat } => {
+                GitAction::Log {
+                    limit,
+                    stat,
+                    author,
+                } => {
                     let limit_str = limit.to_string();
-                    let mut args = vec!["log", "--oneline", "-n", &limit_str];
+                    let mut args: Vec<String> = vec![
+                        "log".into(),
+                        "--oneline".into(),
+                        "-n".into(),
+                        limit_str.clone(),
+                    ];
                     if stat {
-                        args.push("--stat");
+                        args.push("--stat".into());
+                    }
+                    if let Some(author) = author {
+                        args.push("--author".into());
+                        args.push(author);
                     }
                     let out = std::process::Command::new("git")
                         .args(&args)
@@ -2819,6 +2873,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             notify,
             workspace,
             max_turns,
+            watch,
         } => {
             let mut config = Config::load()?;
             if let Some(ws) = workspace {
@@ -2865,6 +2920,54 @@ fn dispatch(cli: Cli) -> Result<()> {
                 "[forge] {} turn(s), {} tool call(s), session {}",
                 outcome.turns, outcome.tool_calls, session.id
             );
+            if watch {
+                let ws = config.workspace_root();
+                println!(
+                    "watching {} — re-running on change (Ctrl+C to stop)",
+                    ws.display()
+                );
+                let mut last: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime> =
+                    std::collections::HashMap::new();
+                loop {
+                    let mut changed = false;
+                    for entry in walkdir::WalkDir::new(&ws)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                    {
+                        if entry.file_type().is_file() {
+                            if let Ok(meta) = entry.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    if last
+                                        .get(entry.path())
+                                        .map(|t| *t != modified)
+                                        .unwrap_or(true)
+                                    {
+                                        last.insert(entry.path().to_path_buf(), modified);
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if changed {
+                        let mut session = crate::session::Session::new(format!(
+                            "sess-{}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0)
+                        ));
+                        let outcome = agent.run_into(&mut session.messages, &prompt)?;
+                        session.save(&dir)?;
+                        println!("{}", outcome.final_text);
+                        eprintln!(
+                            "[forge] {} turn(s), {} tool call(s), session {}",
+                            outcome.turns, outcome.tool_calls, session.id
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
             Ok(())
         }
     }
