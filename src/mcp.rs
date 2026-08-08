@@ -196,7 +196,7 @@ impl McpClient {
             .collect())
     }
 
-    /// Read a resource by URI.
+    /// Read a resource by URI, handling both text and structured content.
     pub fn read_resource(&mut self, uri: &str) -> Result<String> {
         let result = self.request("resources/read", json!({ "uri": uri }))?;
         let contents = result
@@ -206,8 +206,42 @@ impl McpClient {
             .unwrap_or_default();
         let mut text = String::new();
         for item in contents {
-            if let Some(t) = item.get("text").and_then(Value::as_str) {
-                text.push_str(t);
+            match item.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(t) = item.get("text").and_then(Value::as_str) {
+                        text.push_str(t);
+                    }
+                }
+                Some("json") => {
+                    if let Some(j) = item.get("json") {
+                        text.push_str(&serde_json::to_string_pretty(j).unwrap_or_default());
+                    }
+                }
+                _ => {
+                    if let Some(t) = item.get("text").and_then(Value::as_str) {
+                        text.push_str(t);
+                    }
+                }
+            }
+        }
+        Ok(text)
+    }
+
+    /// Get a prompt by name.
+    pub fn get_prompt(&mut self, name: &str) -> Result<String> {
+        let result = self.request("prompts/get", json!({ "name": name }))?;
+        let messages = result
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut text = String::new();
+        for message in messages {
+            if let Some(content) = message.get("content") {
+                if let Some(t) = content.get("text").and_then(Value::as_str) {
+                    text.push_str(t);
+                    text.push('\n');
+                }
             }
         }
         Ok(text)

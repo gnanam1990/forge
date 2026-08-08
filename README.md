@@ -67,6 +67,11 @@ built to be simple, testable, and easy to extend.
 - **`forge doctor`** — checks the environment (config, provider, git, browser,
   desktop).
 - **`forge info`** — prints version, workspace, model, tool and session counts.
+- **`forge version` / `forge models` / `forge help`** — version, model catalog,
+  and a command summary.
+- **`forge run --file`** — run a prompt read from a file.
+- **Session export/import** — `forge export <id> <path>` and `forge import <path>`.
+- **`forge init`** — scaffolds a project (config, README, src, .forge).
 - **Real pty terminal** — persistent terminal sessions backed by a real
   pseudo-terminal, so interactive programs work.
 - **Fuzzy search** — the code index falls back to subsequence matching.

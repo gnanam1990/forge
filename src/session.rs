@@ -36,6 +36,16 @@ impl Session {
         self.messages.len()
     }
 
+    /// Serialize the session to JSON.
+    pub fn export(&self) -> Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Deserialize a session from JSON.
+    pub fn import(json: &str) -> Result<Session> {
+        serde_json::from_str(json).map_err(|e| Error::Config(format!("parse session: {e}")))
+    }
+
     /// Save the session to `dir/<id>.json`.
     pub fn save(&self, dir: &Path) -> Result<()> {
         fs::create_dir_all(dir)?;

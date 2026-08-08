@@ -363,6 +363,81 @@ impl Browser {
         )
     }
 
+    /// List the form input fields on the page.
+    pub fn get_form_fields(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "Array.from(document.querySelectorAll('input, textarea, select')).map(e => (e.name || e.id || '') + '=' + (e.value || '')).join('\\n')",
+        )
+    }
+
+    /// List the resource URLs the page has loaded (from performance entries).
+    pub fn get_network_requests(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "performance.getEntriesByType('resource').map(e => e.name).join('\\n')",
+        )
+    }
+
+    /// Get the page's response headers by fetching the current URL with HEAD.
+    pub fn get_headers(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "fetch(location.href, {method: 'HEAD'}).then(r => { const h = {}; r.headers.forEach((v, k) => h[k] = v); return JSON.stringify(h); })",
+        )
+    }
+
+    /// Read console messages by enabling the Runtime domain and collecting
+    /// `consoleAPICalled` events for a short window.
+    pub fn get_console_messages(&self, target: &Target) -> Result<String> {
+        let (mut socket, _) = tungstenite::connect(&target.ws_url)
+            .map_err(|e| Error::Agent(format!("connect devtools: {e}")))?;
+        socket
+            .send(tungstenite::Message::Text(serde_json::to_string(&json!({
+                "id": 1, "method": "Runtime.enable", "params": {}
+            }))?))
+            .map_err(|e| Error::Agent(format!("enable runtime: {e}")))?;
+        // Trigger a console message so we have something to read.
+        socket
+            .send(tungstenite::Message::Text(serde_json::to_string(&json!({
+                "id": 2, "method": "Runtime.evaluate",
+                "params": { "expression": "console.log('forge-probe')" }
+            }))?))
+            .map_err(|e| Error::Agent(format!("probe console: {e}")))?;
+        let mut messages = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            match socket.read() {
+                Ok(tungstenite::Message::Text(t)) => {
+                    if let Ok(value) = serde_json::from_str::<Value>(&t) {
+                        if value.get("method").and_then(Value::as_str)
+                            == Some("Runtime.consoleAPICalled")
+                        {
+                            if let Some(args) =
+                                value.pointer("/params/args").and_then(Value::as_array)
+                            {
+                                let text: Vec<String> = args
+                                    .iter()
+                                    .filter_map(|a| {
+                                        a.get("value").and_then(Value::as_str).map(str::to_string)
+                                    })
+                                    .collect();
+                                messages.push(text.join(" "));
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        if messages.is_empty() {
+            Ok("no console messages".into())
+        } else {
+            Ok(messages.join("\n"))
+        }
+    }
+
     /// Click at a coordinate in the target.
     pub fn click(&self, target: &Target, x: i32, y: i32) -> Result<()> {
         self.send_command(

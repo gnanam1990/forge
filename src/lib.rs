@@ -16,6 +16,7 @@ pub mod hooks;
 pub mod log;
 pub mod mcp;
 pub mod memory;
+pub mod models;
 pub mod notify;
 pub mod permission;
 pub mod plan;

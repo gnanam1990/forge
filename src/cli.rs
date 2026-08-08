@@ -23,6 +23,9 @@ pub enum Command {
     Run {
         /// The user prompt.
         prompt: String,
+        /// Read the prompt from a file instead of the argument.
+        #[arg(long)]
+        file: Option<PathBuf>,
         /// Override the workspace root.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -30,6 +33,12 @@ pub enum Command {
         #[arg(long)]
         max_turns: Option<usize>,
     },
+    /// Print the version.
+    Version,
+    /// List the built-in model catalog.
+    Models,
+    /// Print a summary of all commands.
+    Help,
     /// List the available tools.
     Tools,
     /// Run several prompts as parallel sub-agents. The file is a JSON array of
@@ -64,6 +73,18 @@ pub enum Command {
     },
     /// List saved sessions.
     Sessions,
+    /// Export a session to a JSON file: `export <id> <path>`.
+    Export {
+        /// The session id.
+        id: String,
+        /// The output file path.
+        path: PathBuf,
+    },
+    /// Import a session from a JSON file: `import <path>`.
+    Import {
+        /// The input file path.
+        path: PathBuf,
+    },
     /// Start an interactive chat session.
     Chat,
     /// Manage cross-session memory: `remember <key> <value>`, `recall <key>`,
@@ -181,6 +202,38 @@ fn which(name: &str) -> bool {
         .any(|dir| std::path::Path::new(dir).join(name).exists())
 }
 
+/// Print a summary of all commands.
+fn print_help() {
+    println!(
+        "forge — a coding agent in Rust\n\n\
+         run <prompt> [--file] [--workspace] [--max-turns]   run the agent\n\
+         chat                                          interactive TUI\n\
+         resume <id> <prompt>                           resume a session\n\
+         sessions                                      list sessions\n\
+         export <id> <path> / import <path>            session export/import\n\
+         orchestrate <file>                            parallel sub-agents\n\
+         workflow <file>                                run a workflow\n\
+         plan <file>                                    run a typed plan\n\
+         effort <level>                                set effort posture\n\
+         tools                                         list tools\n\
+         models                                        list models\n\
+         memory <remember|recall|list>                 manage memory\n\
+         cron <file> [--forever]                       run scheduled jobs\n\
+         review                                        review the git diff\n\
+         mcp <server> <tool> <args>                    call an MCP tool\n\
+         browser <url> [--eval] [--click] [--type] [--screenshot]  browser\n\
+         desktop <screenshot|click|type>               desktop control\n\
+         plugin <list|enable|disable|add>              manage plugins\n\
+         config                                        show config\n\
+         doctor                                        check environment\n\
+         info                                          show summary\n\
+         setup                                         write config + samples\n\
+         init                                          scaffold a project\n\
+         version                                       print version\n\
+         help                                          this help"
+    );
+}
+
 fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Tools => {
@@ -293,8 +346,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Sessions => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let dir = crate::session::default_sessions_dir()?;
             let ids = crate::session::Session::list(&dir)?;
+            wiring
+                .telemetry
+                .record("sessions", serde_json::json!({ "count": ids.len() }))?;
             if ids.is_empty() {
                 println!("no saved sessions");
             } else {
@@ -310,6 +368,25 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                 }
             }
+            Ok(())
+        }
+        Command::Export { id, path } => {
+            let dir = crate::session::default_sessions_dir()?;
+            let session = crate::session::Session::load(&dir, &id)?;
+            std::fs::write(&path, session.export()?)?;
+            println!("exported session {id} to {}", path.display());
+            Ok(())
+        }
+        Command::Import { path } => {
+            let raw = std::fs::read_to_string(&path)?;
+            let session = crate::session::Session::import(&raw)?;
+            let dir = crate::session::default_sessions_dir()?;
+            session.save(&dir)?;
+            println!(
+                "imported session {} ({} messages)",
+                session.id,
+                session.message_count()
+            );
             Ok(())
         }
         Command::Chat => {
@@ -517,6 +594,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Setup => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("setup", serde_json::json!({}))?;
             // Config.
             let config_path = crate::config::config_path()?;
             if let Some(parent) = config_path.parent() {
@@ -629,6 +709,8 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Config => {
             let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("config", serde_json::json!({}))?;
             let mut redacted = config.clone();
             if let Some(key) = redacted.provider.api_key.as_mut() {
                 if !key.is_empty() {
@@ -640,12 +722,16 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Plugins => {
             let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let mut registry = Registry::builtin();
             let dir = config
                 .plugins_dir
                 .clone()
                 .unwrap_or_else(|| config.workspace_root().join(".forge").join("plugins"));
             let count = crate::plugin::load_plugins_from_dir(&dir, &mut registry)?;
+            wiring
+                .telemetry
+                .record("plugins", serde_json::json!({ "count": count }))?;
             if count == 0 {
                 println!("no plugins loaded from {}", dir.display());
             } else {
@@ -761,27 +847,70 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
+        Command::Version => {
+            println!("forge {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Command::Models => {
+            for model in crate::models::MODELS {
+                println!("{model}");
+            }
+            Ok(())
+        }
         Command::Init => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("init", serde_json::json!({}))?;
             let path = crate::config::config_path()?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let sample = r#"{
-  "workspace": "/path/to/your/project",
+  "workspace": ".",
   "provider": {
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "api_key": ""
   },
-  "max_turns": 10
+  "max_turns": 10,
+  "mcp_servers": [],
+  "plugins_dir": ".forge/plugins",
+  "hooks": [],
+  "telemetry": true
 }
 "#;
             std::fs::write(&path, sample)?;
             println!("wrote sample config to {}", path.display());
+
+            // Create a minimal project scaffold in the current directory.
+            let cwd = std::env::current_dir()?;
+            let readme = cwd.join("README.md");
+            if !readme.exists() {
+                std::fs::write(&readme, "# My Project\n\nA project managed with forge.\n")?;
+                println!("wrote {}", readme.display());
+            }
+            let src = cwd.join("src");
+            std::fs::create_dir_all(&src)?;
+            let main = src.join("main.rs");
+            if !main.exists() {
+                std::fs::write(
+                    &main,
+                    "fn main() {\n    println!(\"hello from forge\");\n}\n",
+                )?;
+                println!("wrote {}", main.display());
+            }
+            let forge_dir = cwd.join(".forge");
+            std::fs::create_dir_all(&forge_dir)?;
+            println!("scaffolded project in {}", cwd.display());
+            Ok(())
+        }
+        Command::Help => {
+            print_help();
             Ok(())
         }
         Command::Run {
             prompt,
+            file,
             workspace,
             max_turns,
         } => {
@@ -789,6 +918,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             if let Some(ws) = workspace {
                 config.workspace = Some(ws);
             }
+            let prompt = if let Some(file) = file {
+                std::fs::read_to_string(&file)?
+            } else {
+                prompt
+            };
             let turns = max_turns.or(config.max_turns).unwrap_or(10);
             let provider = HttpProvider::new(&config.provider)?;
             let wiring = crate::wiring::build_wiring(&config)?;
