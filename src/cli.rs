@@ -306,7 +306,7 @@ pub enum Command {
     Hooks,
     /// Show the permission policy for tools.
     Permission,
-    /// Run git subcommands: `git <log|branch|branch-create|switch|stash|stash-pop|blame|tag|remote|status>`.
+    /// Run git subcommands: `git <log|branch|branch-create|switch|stash list|blame|tag|remote|status>`.
     Git {
         #[command(subcommand)]
         action: GitAction,
@@ -510,6 +510,17 @@ pub enum SessionAction {
     },
 }
 
+/// Subcommands for `forge git stash`.
+#[derive(Subcommand)]
+pub enum StashAction {
+    /// List stashed changes.
+    List,
+    /// Stash uncommitted changes.
+    Push,
+    /// Restore the most recent stash.
+    Pop,
+}
+
 /// Subcommands for `forge git remote`.
 #[derive(Subcommand)]
 pub enum RemoteAction {
@@ -526,6 +537,13 @@ pub enum RemoteAction {
     Remove {
         /// The remote name.
         name: String,
+    },
+    /// Rename a remote.
+    Rename {
+        /// The old remote name.
+        old: String,
+        /// The new remote name.
+        new: String,
     },
 }
 
@@ -562,10 +580,11 @@ pub enum GitAction {
         /// The branch name.
         name: String,
     },
-    /// Stash uncommitted changes.
-    Stash,
-    /// Restore the most recent stash.
-    StashPop,
+    /// Manage the stash: `stash` (help), `stash list`, `stash push`, `stash pop`.
+    Stash {
+        #[command(subcommand)]
+        action: StashAction,
+    },
     /// Show who last changed each line of a file: `git blame <file>`.
     Blame {
         /// The file path.
@@ -945,11 +964,11 @@ fn print_help() {
          effort <level>                                set effort posture\n\
          tools                                         list tools\n\
          models                                        list models\n\
-         memory <remember|recall|list|clear|export>      manage memory\n\
+         memory <remember|recall|search|list|stats|remove|clear|export|import>  manage memory\n\
          cron <file> [--forever]                       run scheduled jobs\n\
          review                                        review the git diff\n\
          mcp call <server> <tool> <args>               call an MCP tool\n\
-         mcp add/list/remove                           manage MCP servers\n\
+         mcp add/list/remove/test                      manage MCP servers\n\
          diff [--staged]                                show the git diff\n\
          commit [--all] [message]                      commit changes\n\
          build / test / lint / format / check          run project commands\n\
@@ -961,7 +980,7 @@ fn print_help() {
          token <text> [--file]                         count tokens\n\
          hooks                                         list hooks\n\
          permission                                    show tool permissions\n\
-         git <log|branch|remote|status|stash|blame|tag|switch>  git helpers\n\
+         git <log|diff|add|commit|push|pull|fetch|reset|show|merge|checkout|rebase|cherry-pick|branch|stash list|remote|status|blame|tag|switch>  git helpers\n\
          web <query>                                       web search\n\
          pr [--base main] [--title]                    create a pull request\n\
          sandbox run <cmd>                              run a command in the sandbox\n\
@@ -1977,6 +1996,40 @@ fn dispatch(cli: Cli) -> Result<()> {
                             .workspace
                             .map(|p| serde_json::Value::String(p.display().to_string()))
                             .unwrap_or(serde_json::Value::Null),
+                        "plugins_dir" => config
+                            .plugins_dir
+                            .map(|p| serde_json::Value::String(p.display().to_string()))
+                            .unwrap_or(serde_json::Value::Null),
+                        "commands.build" => config
+                            .commands
+                            .build
+                            .clone()
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
+                        "commands.test" => config
+                            .commands
+                            .test
+                            .clone()
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
+                        "commands.lint" => config
+                            .commands
+                            .lint
+                            .clone()
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
+                        "commands.format" => config
+                            .commands
+                            .format
+                            .clone()
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
+                        "commands.check" => config
+                            .commands
+                            .check
+                            .clone()
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
                         "telemetry" => serde_json::Value::Bool(config.telemetry),
                         other => {
                             return Err(crate::error::Error::InvalidArgs(format!(
@@ -2001,6 +2054,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                             })?)
                         }
                         "workspace" => config.workspace = Some(std::path::PathBuf::from(&value)),
+                        "plugins_dir" => {
+                            config.plugins_dir = Some(std::path::PathBuf::from(&value))
+                        }
+                        "commands.build" => config.commands.build = Some(value.clone()),
+                        "commands.test" => config.commands.test = Some(value.clone()),
+                        "commands.lint" => config.commands.lint = Some(value.clone()),
+                        "commands.format" => config.commands.format = Some(value.clone()),
+                        "commands.check" => config.commands.check = Some(value.clone()),
                         "telemetry" => config.telemetry = value == "true" || value == "on",
                         other => {
                             return Err(crate::error::Error::InvalidArgs(format!(
@@ -2030,6 +2091,12 @@ fn dispatch(cli: Cli) -> Result<()> {
                         "provider.api_key" => config.provider.api_key = None,
                         "max_turns" => config.max_turns = None,
                         "workspace" => config.workspace = None,
+                        "plugins_dir" => config.plugins_dir = None,
+                        "commands.build" => config.commands.build = None,
+                        "commands.test" => config.commands.test = None,
+                        "commands.lint" => config.commands.lint = None,
+                        "commands.format" => config.commands.format = None,
+                        "commands.check" => config.commands.check = None,
                         "telemetry" => config.telemetry = true,
                         other => {
                             return Err(crate::error::Error::InvalidArgs(format!(
@@ -2594,6 +2661,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Env => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("env", serde_json::json!({}))?;
             println!("forge {}", env!("CARGO_PKG_VERSION"));
             println!("os: {}", std::env::consts::OS);
             println!("arch: {}", std::env::consts::ARCH);
@@ -2908,6 +2978,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                         }
                         println!("removed remote {name}");
                     }
+                    RemoteAction::Rename { old, new } => {
+                        let status = std::process::Command::new("git")
+                            .args(["remote", "rename", &old, &new])
+                            .current_dir(&ws)
+                            .status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git remote rename {old} failed with {status}"
+                            )));
+                        }
+                        println!("renamed remote {old} to {new}");
+                    }
                 },
                 GitAction::Status => {
                     let out = std::process::Command::new("git")
@@ -2945,30 +3027,44 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     println!("switched to branch {name}");
                 }
-                GitAction::Stash => {
-                    let status = std::process::Command::new("git")
-                        .args(["stash"])
-                        .current_dir(&ws)
-                        .status()?;
-                    if !status.success() {
-                        return Err(crate::error::Error::Tool(format!(
-                            "git stash failed with {status}"
-                        )));
+                GitAction::Stash { action } => match action {
+                    StashAction::List => {
+                        let out = std::process::Command::new("git")
+                            .args(["stash", "list"])
+                            .current_dir(&ws)
+                            .output()?;
+                        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                        if text.trim().is_empty() {
+                            println!("no stashes");
+                        } else {
+                            println!("{text}");
+                        }
                     }
-                    println!("changes stashed");
-                }
-                GitAction::StashPop => {
-                    let status = std::process::Command::new("git")
-                        .args(["stash", "pop"])
-                        .current_dir(&ws)
-                        .status()?;
-                    if !status.success() {
-                        return Err(crate::error::Error::Tool(format!(
-                            "git stash pop failed with {status}"
-                        )));
+                    StashAction::Push => {
+                        let status = std::process::Command::new("git")
+                            .args(["stash"])
+                            .current_dir(&ws)
+                            .status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git stash failed with {status}"
+                            )));
+                        }
+                        println!("changes stashed");
                     }
-                    println!("stash restored");
-                }
+                    StashAction::Pop => {
+                        let status = std::process::Command::new("git")
+                            .args(["stash", "pop"])
+                            .current_dir(&ws)
+                            .status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git stash pop failed with {status}"
+                            )));
+                        }
+                        println!("stash restored");
+                    }
+                },
                 GitAction::Blame { file } => {
                     let out = std::process::Command::new("git")
                         .args(["blame", "--", &file])

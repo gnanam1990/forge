@@ -5,11 +5,15 @@
 pub mod apply_patch;
 pub mod ask_user;
 pub mod bash;
+pub mod delete_file;
 pub mod edit_file;
 pub mod git;
+pub mod git_log;
 pub mod glob;
 pub mod grep;
 pub mod list_directory;
+pub mod make_directory;
+pub mod move_file;
 pub mod read_file;
 pub mod search;
 pub mod ssh;
@@ -119,6 +123,9 @@ impl Registry {
         registry.register(Box::new(read_file::ReadFileTool::new()));
         registry.register(Box::new(write_file::WriteFileTool::new()));
         registry.register(Box::new(edit_file::EditFileTool::new()));
+        registry.register(Box::new(move_file::MoveFileTool::new()));
+        registry.register(Box::new(delete_file::DeleteFileTool::new()));
+        registry.register(Box::new(make_directory::MakeDirectoryTool::new()));
         registry.register(Box::new(list_directory::ListDirectoryTool::new()));
         registry.register(Box::new(bash::BashTool::new()));
         registry.register(Box::new(glob::GlobTool::new()));
@@ -128,6 +135,7 @@ impl Registry {
         registry.register(Box::new(git::GitStatusTool::new()));
         registry.register(Box::new(git::GitDiffTool::new()));
         registry.register(Box::new(git::GitCommitTool::new()));
+        registry.register(Box::new(git_log::GitLogTool::new()));
         registry.register(Box::new(apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(search::SearchTool::new()));
         registry.register(Box::new(terminal::TerminalTool::new()));

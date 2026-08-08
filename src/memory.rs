@@ -109,6 +109,11 @@ impl Memory {
 
 /// The default memory file: `~/.local/share/forge/memory.json`.
 pub fn default_memory_path() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("FORGE_MEMORY") {
+        if !p.trim().is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
     let home = std::env::var("HOME").map_err(|_| Error::Config("HOME is not set".into()))?;
     Ok(PathBuf::from(home)
         .join(".local")

@@ -48,6 +48,11 @@ impl Telemetry {
 
 /// The default telemetry file: `~/.local/share/forge/telemetry.jsonl`.
 pub fn default_telemetry_path() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("FORGE_TELEMETRY") {
+        if !p.trim().is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
     let home = std::env::var("HOME").map_err(|_| Error::Config("HOME is not set".into()))?;
     Ok(PathBuf::from(home)
         .join(".local")

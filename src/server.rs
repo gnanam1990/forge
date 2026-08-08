@@ -100,6 +100,25 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
             "application/json",
             json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }).to_string(),
         )),
+        ("GET", "/tools") => {
+            let names = crate::tools::Registry::builtin().names();
+            Ok((
+                200,
+                "application/json",
+                json!({ "tools": names }).to_string(),
+            ))
+        }
+        ("GET", "/config") => Ok((
+            200,
+            "application/json",
+            json!({
+                "workspace": config.workspace_root().display().to_string(),
+                "model": config.provider.model.as_deref().unwrap_or("(none)"),
+                "max_turns": config.max_turns.unwrap_or(10),
+                "telemetry": config.telemetry,
+            })
+            .to_string(),
+        )),
         ("POST", "/run") => {
             let prompt: serde_json::Value = serde_json::from_str(&req.body)
                 .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
@@ -117,6 +136,29 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
                     "tool_calls": outcome.tool_calls,
                 })
                 .to_string(),
+            ))
+        }
+        ("POST", "/memory") => {
+            let value: serde_json::Value = serde_json::from_str(&req.body)
+                .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
+            let key = value
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::InvalidArgs("body must be {\"key\": string, ...}".into()))?;
+            let val = value
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    Error::InvalidArgs("body must be {\"key\": string, \"value\": string}".into())
+                })?;
+            let path = crate::memory::default_memory_path()?;
+            let mut memory = crate::memory::Memory::load(path)?;
+            memory.remember(key, val);
+            memory.save()?;
+            Ok((
+                200,
+                "application/json",
+                json!({ "ok": true, "key": key }).to_string(),
             ))
         }
         ("GET", "/sessions") => {
@@ -141,6 +183,35 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
                 "application/json",
                 json!({ "memory": facts }).to_string(),
             ))
+        }
+        ("DELETE", _) => {
+            // `DELETE /memory/<key>`
+            let rest = req.path.trim_start_matches("/memory/");
+            if req.path.starts_with("/memory/") && !rest.is_empty() {
+                let path = crate::memory::default_memory_path()?;
+                let mut memory = crate::memory::Memory::load(path)?;
+                let removed = memory.forget(rest);
+                if removed {
+                    memory.save()?;
+                    Ok((
+                        200,
+                        "application/json",
+                        json!({ "ok": true, "key": rest }).to_string(),
+                    ))
+                } else {
+                    Ok((
+                        404,
+                        "application/json",
+                        json!({ "error": format!("no fact named {rest}") }).to_string(),
+                    ))
+                }
+            } else {
+                Ok((
+                    404,
+                    "application/json",
+                    json!({ "error": "not found" }).to_string(),
+                ))
+            }
         }
         _ => Ok((
             404,
@@ -232,5 +303,87 @@ mod tests {
             body: "{}".into(),
         };
         assert!(route(&req).is_err());
+    }
+
+    #[test]
+    fn routes_tools() {
+        let req = Request {
+            method: "GET".into(),
+            path: "/tools".into(),
+            body: String::new(),
+        };
+        let (status, ct, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(ct, "application/json");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let tools = v["tools"].as_array().unwrap();
+        assert!(tools.iter().any(|t| t == "read_file"));
+        assert!(tools.iter().any(|t| t == "move_file"));
+    }
+
+    #[test]
+    fn routes_config() {
+        let req = Request {
+            method: "GET".into(),
+            path: "/config".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.get("workspace").is_some());
+        assert!(v.get("model").is_some());
+    }
+
+    #[test]
+    fn memory_post_and_delete_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FORGE_MEMORY", dir.path().join("memory.json"));
+        let post = Request {
+            method: "POST".into(),
+            path: "/memory".into(),
+            body: r#"{"key":"lang","value":"rust"}"#.into(),
+        };
+        let (status, _, _) = route(&post).unwrap();
+        assert_eq!(status, 200);
+
+        let get = Request {
+            method: "GET".into(),
+            path: "/memory".into(),
+            body: String::new(),
+        };
+        let (_, _, body) = route(&get).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["memory"]["lang"], "rust");
+
+        let del = Request {
+            method: "DELETE".into(),
+            path: "/memory/lang".into(),
+            body: String::new(),
+        };
+        let (status, _, _) = route(&del).unwrap();
+        assert_eq!(status, 200);
+
+        let get2 = Request {
+            method: "GET".into(),
+            path: "/memory".into(),
+            body: String::new(),
+        };
+        let (_, _, body) = route(&get2).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["memory"].as_object().unwrap().is_empty());
+
+        std::env::remove_var("FORGE_MEMORY");
+    }
+
+    #[test]
+    fn delete_missing_memory_is_404() {
+        let req = Request {
+            method: "DELETE".into(),
+            path: "/memory/does_not_exist".into(),
+            body: String::new(),
+        };
+        let (status, _, _) = route(&req).unwrap();
+        assert_eq!(status, 404);
     }
 }

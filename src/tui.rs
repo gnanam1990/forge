@@ -69,7 +69,7 @@ impl App {
             match prompt.as_str() {
                 "/help" => {
                     self.messages
-                        .push("commands: /help, /sessions, /exit".into());
+                        .push("commands: /help, /sessions, /clear, /exit".into());
                 }
                 "/sessions" => {
                     let ids = Session::list(&self.sessions_dir).unwrap_or_default();
@@ -78,6 +78,9 @@ impl App {
                     } else {
                         self.messages.push(ids.join("\n"));
                     }
+                }
+                "/clear" => {
+                    self.messages.clear();
                 }
                 "/exit" | "/quit" => {
                     self.status = "bye".into();
