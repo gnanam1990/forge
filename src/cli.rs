@@ -164,6 +164,9 @@ pub enum Command {
         /// Stage all changes before committing.
         #[arg(long)]
         all: bool,
+        /// Amend the last commit instead of creating a new one.
+        #[arg(long)]
+        amend: bool,
     },
     /// Run the project's build command.
     Build,
@@ -310,7 +313,7 @@ pub enum Command {
     Hooks,
     /// Show the permission policy for tools.
     Permission,
-    /// Run git subcommands: `git <log|branch|remote|status>`.
+    /// Run git subcommands: `git <log|branch|branch-create|switch|stash|stash-pop|blame|tag|remote|status>`.
     Git {
         #[command(subcommand)]
         action: GitAction,
@@ -335,6 +338,11 @@ pub enum Command {
     /// Search the codebase index for files containing a query.
     Search {
         /// The search query.
+        query: String,
+    },
+    /// Search the web: `web <query>`.
+    Web {
+        /// The web search query.
         query: String,
     },
     /// Show a session's token/context usage: `context <session-id>`.
@@ -397,6 +405,32 @@ pub enum GitAction {
     },
     /// List branches.
     Branch,
+    /// Create and switch to a new branch: `git branch-create <name>`.
+    BranchCreate {
+        /// The new branch name.
+        name: String,
+    },
+    /// Switch to an existing branch: `git switch <name>`.
+    Switch {
+        /// The branch name.
+        name: String,
+    },
+    /// Stash uncommitted changes.
+    Stash,
+    /// Restore the most recent stash.
+    StashPop,
+    /// Show who last changed each line of a file: `git blame <file>`.
+    Blame {
+        /// The file path.
+        file: String,
+    },
+    /// Create an annotated tag: `git tag <name> [message]`.
+    Tag {
+        /// The tag name.
+        name: String,
+        /// The tag message.
+        message: Option<String>,
+    },
     /// Show the configured remotes.
     Remote,
     /// Show the working tree status.
@@ -584,7 +618,8 @@ fn print_help() {
          token <text> [--file]                         count tokens\n\
          hooks                                         list hooks\n\
          permission                                    show tool permissions\n\
-         git <log|branch|remote|status>                git helpers\n\
+         git <log|branch|remote|status|stash|blame|tag|switch>  git helpers\n\
+         web <query>                                       web search\n\
          pr [--base main] [--title]                    create a pull request\n\
          sandbox run <cmd>                              run a command in the sandbox\n\
          search <query>                                search the codebase\n\
@@ -1070,10 +1105,16 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Commit { message, all } => {
+        Command::Commit {
+            message,
+            all,
+            amend,
+        } => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            wiring.telemetry.record("commit", serde_json::json!({}))?;
+            wiring
+                .telemetry
+                .record("commit", serde_json::json!({ "amend": amend }))?;
             let ws = config.workspace_root();
             if all {
                 let out = std::process::Command::new("git")
@@ -1103,8 +1144,12 @@ fn dispatch(cli: Cli) -> Result<()> {
                     generate_commit_message(&config, &diff_text)?
                 }
             };
+            let mut args = vec!["commit", "-m", &msg];
+            if amend {
+                args.push("--amend");
+            }
             let out = std::process::Command::new("git")
-                .args(["commit", "-m", &msg])
+                .args(&args)
                 .current_dir(&ws)
                 .output()?;
             let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -2196,6 +2241,80 @@ fn dispatch(cli: Cli) -> Result<()> {
                         println!("{text}");
                     }
                 }
+                GitAction::BranchCreate { name } => {
+                    let status = std::process::Command::new("git")
+                        .args(["checkout", "-b", &name])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git checkout -b {name} failed with {status}"
+                        )));
+                    }
+                    println!("created and switched to branch {name}");
+                }
+                GitAction::Switch { name } => {
+                    let status = std::process::Command::new("git")
+                        .args(["checkout", &name])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git checkout {name} failed with {status}"
+                        )));
+                    }
+                    println!("switched to branch {name}");
+                }
+                GitAction::Stash => {
+                    let status = std::process::Command::new("git")
+                        .args(["stash"])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git stash failed with {status}"
+                        )));
+                    }
+                    println!("changes stashed");
+                }
+                GitAction::StashPop => {
+                    let status = std::process::Command::new("git")
+                        .args(["stash", "pop"])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git stash pop failed with {status}"
+                        )));
+                    }
+                    println!("stash restored");
+                }
+                GitAction::Blame { file } => {
+                    let out = std::process::Command::new("git")
+                        .args(["blame", "--", &file])
+                        .current_dir(&ws)
+                        .output()?;
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        println!("no blame info for {file}");
+                    } else {
+                        println!("{text}");
+                    }
+                }
+                GitAction::Tag { name, message } => {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(["tag", "-a", &name]).current_dir(&ws);
+                    if let Some(msg) = &message {
+                        cmd.args(["-m", msg]);
+                    }
+                    let status = cmd.status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git tag {name} failed with {status}"
+                        )));
+                    }
+                    println!("created tag {name}");
+                }
             }
             Ok(())
         }
@@ -2263,6 +2382,19 @@ fn dispatch(cli: Cli) -> Result<()> {
                 .record("search", serde_json::json!({ "query": query }))?;
             let ctx = crate::tools::ToolContext::new(config.workspace_root());
             let tool = crate::tools::search::SearchTool::new();
+            let result =
+                crate::tools::Tool::run(&tool, &serde_json::json!({ "query": query }), &ctx)?;
+            println!("{}", result.output);
+            Ok(())
+        }
+        Command::Web { query } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring
+                .telemetry
+                .record("web", serde_json::json!({ "query": query }))?;
+            let ctx = crate::tools::ToolContext::new(config.workspace_root());
+            let tool = crate::tools::web_search::WebSearchTool::new();
             let result =
                 crate::tools::Tool::run(&tool, &serde_json::json!({ "query": query }), &ctx)?;
             println!("{}", result.output);
