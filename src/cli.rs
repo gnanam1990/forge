@@ -142,15 +142,28 @@ pub enum Command {
     },
     /// Review the current git diff for common issues.
     Review,
-    /// Connect to an MCP server and call a tool: `mcp <server> <tool> <json-args>`.
+    /// Interact with MCP servers: `mcp call <server> <tool> <args>`,
+    /// `mcp add <name> <command> [args...]`, `mcp list`, `mcp remove <name>`.
     Mcp {
-        /// The MCP server command to spawn.
-        server: String,
-        /// The tool to call.
-        tool: String,
-        /// JSON arguments for the tool.
-        args: String,
+        #[command(subcommand)]
+        action: McpAction,
     },
+    /// Show the current git diff.
+    Diff,
+    /// Commit staged changes with an AI-generated or explicit message.
+    Commit {
+        /// Use this message instead of generating one.
+        message: Option<String>,
+        /// Stage all changes before committing.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Run the project's build command.
+    Build,
+    /// Run the project's test command.
+    Test,
+    /// Run the project's lint command.
+    Lint,
     /// Launch a headless browser and open a URL.
     Browser {
         /// The URL to open.
@@ -250,6 +263,36 @@ pub enum Command {
     Init,
 }
 
+/// Subcommands for `forge mcp`.
+#[derive(Subcommand)]
+pub enum McpAction {
+    /// Call a tool on an MCP server: `mcp call <server> <tool> <json-args>`.
+    Call {
+        /// The MCP server command to spawn.
+        server: String,
+        /// The tool to call.
+        tool: String,
+        /// JSON arguments for the tool.
+        args: String,
+    },
+    /// Register an MCP server in the config: `mcp add <name> <command> [args...]`.
+    Add {
+        /// The server name.
+        name: String,
+        /// The command to spawn.
+        command: String,
+        /// Extra arguments for the command.
+        args: Vec<String>,
+    },
+    /// List MCP servers registered in the config.
+    List,
+    /// Remove an MCP server from the config: `mcp remove <name>`.
+    Remove {
+        /// The server name.
+        name: String,
+    },
+}
+
 /// Run the CLI and return a process exit code.
 pub fn run(cli: Cli) -> i32 {
     match dispatch(cli) {
@@ -281,6 +324,49 @@ fn which(name: &str) -> bool {
         .any(|dir| std::path::Path::new(dir).join(name).exists())
 }
 
+/// Generate a conventional commit message from a staged diff using the
+/// configured provider. Falls back to a generic message if the provider is
+/// unavailable.
+fn generate_commit_message(config: &Config, diff: &str) -> Result<String> {
+    use crate::agent::{Message, Provider};
+    let provider = crate::agent::http::HttpProvider::new(&config.provider)?;
+    let prompt = format!(
+        "Write a concise conventional commit message (type: subject) for the \
+         following diff. Use one line, imperative mood, under 72 characters. \
+         Do not include any other text.\n\n{diff}"
+    );
+    let reply = provider.complete(&[Message::User(prompt)])?;
+    let msg = reply.content.trim().to_string();
+    if msg.is_empty() {
+        Ok("chore: update".to_string())
+    } else {
+        Ok(msg)
+    }
+}
+
+/// Run a project command (build/test/lint) in the workspace and stream its
+/// output. Returns an error if the command exits non-zero.
+fn run_project_command(config: &Config, step: &str) -> Result<()> {
+    let wiring = crate::wiring::build_wiring(config)?;
+    wiring
+        .telemetry
+        .record("project", serde_json::json!({ "step": step }))?;
+    let ws = config.workspace_root();
+    let cmd = config.commands.resolve(step, &ws);
+    eprintln!("[forge] {step}: {cmd}");
+    let status = std::process::Command::new("sh")
+        .args(["-c", &cmd])
+        .current_dir(&ws)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(crate::error::Error::Tool(format!(
+            "{step} failed with {status}"
+        )))
+    }
+}
+
 /// Print a summary of all commands.
 fn print_help() {
     println!(
@@ -299,7 +385,11 @@ fn print_help() {
          memory <remember|recall|list|clear|export>      manage memory\n\
          cron <file> [--forever]                       run scheduled jobs\n\
          review                                        review the git diff\n\
-         mcp <server> <tool> <args>                    call an MCP tool\n\
+         mcp call <server> <tool> <args>               call an MCP tool\n\
+         mcp add/list/remove                           manage MCP servers\n\
+         diff                                          show the git diff\n\
+         commit [--all] [message]                      commit changes\n\
+         build / test / lint                           run project commands\n\
          browser <url> [--eval] [--click] [--type] [--screenshot]  browser\n\
          desktop <screenshot|click|type>               desktop control\n\
          plugin <list|enable|disable|add>              manage plugins\n\
@@ -582,20 +672,155 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Mcp { server, tool, args } => {
+        Command::Mcp { action } => match action {
+            McpAction::Call { server, tool, args } => {
+                let config = Config::load()?;
+                let wiring = crate::wiring::build_wiring(&config)?;
+                let mut client = crate::mcp::McpClient::connect(&server, &[])?;
+                let tools = client.list_tools()?;
+                eprintln!("[forge] MCP tools: {}", tools.join(", "));
+                let args: serde_json::Value = serde_json::from_str(&args)
+                    .map_err(|e| crate::error::Error::InvalidArgs(format!("bad args: {e}")))?;
+                let output = client.call_tool(&tool, args)?;
+                wiring
+                    .telemetry
+                    .record("mcp", serde_json::json!({ "tool": tool }))?;
+                println!("{output}");
+                Ok(())
+            }
+            McpAction::Add {
+                name,
+                command,
+                args,
+            } => {
+                let path = crate::config::config_path()?;
+                let mut config = Config::load()?;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if config.mcp_servers.iter().any(|s| s.name == name) {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "MCP server {name} already registered"
+                    )));
+                }
+                config.mcp_servers.push(crate::config::McpServerConfig {
+                    name: name.clone(),
+                    command,
+                    args,
+                });
+                std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                println!("registered MCP server {name}");
+                Ok(())
+            }
+            McpAction::List => {
+                let config = Config::load()?;
+                if config.mcp_servers.is_empty() {
+                    println!("no MCP servers registered");
+                } else {
+                    for s in &config.mcp_servers {
+                        let mut cmd = s.command.clone();
+                        for a in &s.args {
+                            cmd.push(' ');
+                            cmd.push_str(a);
+                        }
+                        println!("{}: {cmd}", s.name);
+                    }
+                }
+                Ok(())
+            }
+            McpAction::Remove { name } => {
+                let path = crate::config::config_path()?;
+                let mut config = Config::load()?;
+                let before = config.mcp_servers.len();
+                config.mcp_servers.retain(|s| s.name != name);
+                if config.mcp_servers.len() == before {
+                    println!("no MCP server named {name}");
+                } else {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("removed MCP server {name}");
+                }
+                Ok(())
+            }
+        },
+        Command::Diff => {
             let config = Config::load()?;
             let wiring = crate::wiring::build_wiring(&config)?;
-            let mut client = crate::mcp::McpClient::connect(&server, &[])?;
-            let tools = client.list_tools()?;
-            eprintln!("[forge] MCP tools: {}", tools.join(", "));
-            let args: serde_json::Value = serde_json::from_str(&args)
-                .map_err(|e| crate::error::Error::InvalidArgs(format!("bad args: {e}")))?;
-            let output = client.call_tool(&tool, args)?;
-            wiring
-                .telemetry
-                .record("mcp", serde_json::json!({ "tool": tool }))?;
-            println!("{output}");
+            wiring.telemetry.record("diff", serde_json::json!({}))?;
+            let ws = config.workspace_root();
+            let output = std::process::Command::new("git")
+                .args(["diff", "HEAD"])
+                .current_dir(&ws)
+                .output()?;
+            let text = String::from_utf8_lossy(&output.stdout).into_owned();
+            if text.trim().is_empty() {
+                println!("no changes");
+            } else {
+                println!("{text}");
+            }
             Ok(())
+        }
+        Command::Commit { message, all } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("commit", serde_json::json!({}))?;
+            let ws = config.workspace_root();
+            if all {
+                let out = std::process::Command::new("git")
+                    .args(["add", "-A"])
+                    .current_dir(&ws)
+                    .output()?;
+                if !out.status.success() {
+                    return Err(crate::error::Error::Tool(format!(
+                        "git add failed: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    )));
+                }
+            }
+            let msg = match message {
+                Some(m) => m,
+                None => {
+                    let diff = std::process::Command::new("git")
+                        .args(["diff", "--cached"])
+                        .current_dir(&ws)
+                        .output()?;
+                    let diff_text = String::from_utf8_lossy(&diff.stdout).into_owned();
+                    if diff_text.trim().is_empty() {
+                        return Err(crate::error::Error::InvalidArgs(
+                            "nothing staged to commit; use --all or stage changes first".into(),
+                        ));
+                    }
+                    generate_commit_message(&config, &diff_text)?
+                }
+            };
+            let out = std::process::Command::new("git")
+                .args(["commit", "-m", &msg])
+                .current_dir(&ws)
+                .output()?;
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            if !out.status.success() {
+                return Err(crate::error::Error::Tool(format!(
+                    "git commit failed: {}{}",
+                    text,
+                    String::from_utf8_lossy(&out.stderr)
+                )));
+            }
+            println!("{text}");
+            Ok(())
+        }
+        Command::Build => {
+            let config = Config::load()?;
+            run_project_command(&config, "build")
+        }
+        Command::Test => {
+            let config = Config::load()?;
+            run_project_command(&config, "test")
+        }
+        Command::Lint => {
+            let config = Config::load()?;
+            run_project_command(&config, "lint")
         }
         Command::Browser {
             url,

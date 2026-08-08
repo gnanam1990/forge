@@ -35,6 +35,98 @@ pub struct Config {
     /// Command aliases: name -> command.
     #[serde(default)]
     pub aliases: std::collections::HashMap<String, String>,
+    /// Project command overrides for build/test/lint.
+    #[serde(default)]
+    pub commands: CommandsConfig,
+}
+
+/// Project command overrides used by `forge build`, `forge test`, and
+/// `forge lint`. Each is an optional shell command; when unset, forge falls
+/// back to a sensible default for the detected project type.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommandsConfig {
+    /// Command to build the project (e.g. `cargo build`).
+    pub build: Option<String>,
+    /// Command to run the project's tests (e.g. `cargo test`).
+    pub test: Option<String>,
+    /// Command to lint the project (e.g. `cargo clippy`).
+    pub lint: Option<String>,
+}
+
+impl CommandsConfig {
+    /// Resolve the effective command for a step, falling back to a default
+    /// detected from the workspace contents.
+    pub fn resolve(&self, step: &str, workspace: &Path) -> String {
+        if let Some(cmd) = match step {
+            "build" => self.build.as_deref(),
+            "test" => self.test.as_deref(),
+            "lint" => self.lint.as_deref(),
+            _ => None,
+        } {
+            return cmd.to_string();
+        }
+        default_command(step, workspace)
+    }
+}
+
+/// Pick a default command for a step based on the project type detected in the
+/// workspace (Cargo, npm, pnpm, yarn, Python, or a plain shell fallback).
+fn default_command(step: &str, workspace: &Path) -> String {
+    let has = |name: &str| workspace.join(name).exists();
+    let cargo = has("Cargo.toml");
+    let npm = has("package.json");
+    let pnpm = has("pnpm-lock.yaml");
+    let yarn = has("yarn.lock");
+    let python = has("pyproject.toml") || has("requirements.txt") || has("setup.py");
+    match step {
+        "build" => {
+            if cargo {
+                "cargo build".to_string()
+            } else if pnpm {
+                "pnpm build".to_string()
+            } else if yarn {
+                "yarn build".to_string()
+            } else if npm {
+                "npm run build".to_string()
+            } else if python {
+                "python -m build".to_string()
+            } else {
+                "make build".to_string()
+            }
+        }
+        "test" => {
+            if cargo {
+                "cargo test".to_string()
+            } else if pnpm {
+                "pnpm test".to_string()
+            } else if yarn {
+                "yarn test".to_string()
+            } else if npm {
+                "npm test".to_string()
+            } else if python {
+                "python -m pytest".to_string()
+            } else {
+                "make test".to_string()
+            }
+        }
+        "lint" => {
+            if cargo {
+                "cargo clippy --all-targets".to_string()
+            } else if pnpm {
+                "pnpm lint".to_string()
+            } else if yarn {
+                "yarn lint".to_string()
+            } else if npm {
+                "npm run lint".to_string()
+            } else if python {
+                "python -m ruff check .".to_string()
+            } else {
+                "make lint".to_string()
+            }
+        }
+        _ => String::new(),
+    }
 }
 
 /// An MCP server to connect to at startup.
@@ -202,5 +294,40 @@ mod tests {
     #[test]
     fn validate_accepts_default() {
         assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn default_command_detects_cargo() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let cmds = CommandsConfig::default();
+        assert_eq!(cmds.resolve("build", dir.path()), "cargo build");
+        assert_eq!(cmds.resolve("test", dir.path()), "cargo test");
+        assert_eq!(
+            cmds.resolve("lint", dir.path()),
+            "cargo clippy --all-targets"
+        );
+    }
+
+    #[test]
+    fn default_command_detects_npm() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let cmds = CommandsConfig::default();
+        assert_eq!(cmds.resolve("build", dir.path()), "npm run build");
+        assert_eq!(cmds.resolve("test", dir.path()), "npm test");
+        assert_eq!(cmds.resolve("lint", dir.path()), "npm run lint");
+    }
+
+    #[test]
+    fn explicit_command_overrides_default() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let cmds = CommandsConfig {
+            build: Some("make build".into()),
+            ..Default::default()
+        };
+        assert_eq!(cmds.resolve("build", dir.path()), "make build");
+        assert_eq!(cmds.resolve("test", dir.path()), "cargo test");
     }
 }
