@@ -53,6 +53,11 @@ impl Memory {
         facts
     }
 
+    /// Clear all facts.
+    pub fn clear(&mut self) {
+        self.facts.clear();
+    }
+
     /// Persist to the configured path.
     pub fn save(&self) -> Result<()> {
         if self.path.as_os_str().is_empty() {

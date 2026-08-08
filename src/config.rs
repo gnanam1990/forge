@@ -32,6 +32,9 @@ pub struct Config {
     pub hooks: Vec<HookConfig>,
     /// Whether to record telemetry events.
     pub telemetry: bool,
+    /// Command aliases: name -> command.
+    #[serde(default)]
+    pub aliases: std::collections::HashMap<String, String>,
 }
 
 /// An MCP server to connect to at startup.

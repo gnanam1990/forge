@@ -40,7 +40,11 @@ built to be simple, testable, and easy to extend.
 - **MCP** — a Model Context Protocol client over stdio, with MCP tools
   registered into the agent's tool registry, plus resources, prompts, ping,
   notifications, sampling, logging, roots, and completions support.
-- **`forge config`** — prints the current config with the API key redacted.
+- **`forge config` / `forge config-set <key> <value>`** — show or edit config.
+- **`forge session delete <id>`** — delete a session.
+- **`forge memory clear`** — clear the memory store.
+- **`forge telemetry <on|off>`** — toggle telemetry.
+- **`forge alias <name> <command>`** — manage command aliases.
 - **`forge plugins`** — lists plugins loaded from the plugins directory.
 - **Session listing** — `forge sessions` shows message counts and timestamps.
 - **Search index invalidation** — the code index rebuilds when sources change.

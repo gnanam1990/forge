@@ -173,6 +173,32 @@ pub enum Command {
     Info,
     /// Print the current config (with the API key redacted).
     Config,
+    /// Set a config value: `config set <key> <value>`.
+    ConfigSet {
+        /// The config key (e.g. provider.model, max_turns).
+        key: String,
+        /// The value.
+        value: String,
+    },
+    /// Manage sessions: `session <delete> <id>`.
+    Session {
+        /// Action: delete.
+        action: String,
+        /// The session id.
+        id: String,
+    },
+    /// Toggle telemetry: `telemetry <on|off>`.
+    Telemetry {
+        /// on or off.
+        enabled: String,
+    },
+    /// Manage command aliases: `alias <name> <command>`.
+    Alias {
+        /// The alias name.
+        name: String,
+        /// The command it expands to.
+        command: String,
+    },
     /// Manage plugins: `plugin <list|enable|disable|add>`.
     Plugin {
         /// Action: list | enable | disable | add.
@@ -448,6 +474,11 @@ fn dispatch(cli: Cli) -> Result<()> {
                     for (k, v) in memory.all() {
                         println!("{k}: {v}");
                     }
+                }
+                "clear" => {
+                    memory.clear();
+                    memory.save()?;
+                    println!("memory cleared");
                 }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
@@ -743,6 +774,66 @@ fn dispatch(cli: Cli) -> Result<()> {
                 }
             }
             println!("{}", serde_json::to_string_pretty(&redacted)?);
+            Ok(())
+        }
+        Command::ConfigSet { key, value } => {
+            let path = crate::config::config_path()?;
+            let mut config = Config::load()?;
+            match key.as_str() {
+                "provider.model" => config.provider.model = Some(value.clone()),
+                "provider.base_url" => config.provider.base_url = Some(value.clone()),
+                "provider.api_key" => config.provider.api_key = Some(value.clone()),
+                "max_turns" => {
+                    config.max_turns = Some(value.parse().map_err(|_| {
+                        crate::error::Error::InvalidArgs("max_turns must be a number".into())
+                    })?)
+                }
+                "workspace" => config.workspace = Some(std::path::PathBuf::from(&value)),
+                "telemetry" => config.telemetry = value == "true" || value == "on",
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unknown config key {other}"
+                    )))
+                }
+            }
+            std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+            println!("set {key} = {value}");
+            Ok(())
+        }
+        Command::Session { action, id } => {
+            let dir = crate::session::default_sessions_dir()?;
+            match action.as_str() {
+                "delete" => {
+                    let path = dir.join(format!("{id}.json"));
+                    if path.exists() {
+                        std::fs::remove_file(&path)?;
+                        println!("deleted session {id}");
+                    } else {
+                        println!("no session {id}");
+                    }
+                }
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unknown session action {other}"
+                    )))
+                }
+            }
+            Ok(())
+        }
+        Command::Telemetry { enabled } => {
+            let path = crate::config::config_path()?;
+            let mut config = Config::load()?;
+            config.telemetry = enabled == "on" || enabled == "true";
+            std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+            println!("telemetry {}", if config.telemetry { "on" } else { "off" });
+            Ok(())
+        }
+        Command::Alias { name, command } => {
+            let path = crate::config::config_path()?;
+            let mut config = Config::load()?;
+            config.aliases.insert(name.clone(), command.clone());
+            std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+            println!("alias {name} = {command}");
             Ok(())
         }
         Command::Plugins => {
