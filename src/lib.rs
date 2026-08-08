@@ -25,6 +25,7 @@ pub mod plugin;
 pub mod posture;
 pub mod review;
 pub mod sandbox;
+pub mod server;
 pub mod session;
 pub mod telemetry;
 pub mod tools;

@@ -259,6 +259,34 @@ pub enum Command {
         /// Path to a JSON plan file.
         file: PathBuf,
     },
+    /// Start the HTTP API server: `serve [--bind 127.0.0.1:8787]`.
+    Serve {
+        /// The address to bind, e.g. `127.0.0.1:8787`.
+        #[arg(long, default_value = "127.0.0.1:8787")]
+        bind: String,
+    },
+    /// Back up sessions, config, and memory to a single JSON file.
+    Backup {
+        /// The output file path.
+        path: PathBuf,
+    },
+    /// Restore sessions, config, and memory from a backup file.
+    Restore {
+        /// The backup file path.
+        path: PathBuf,
+    },
+    /// Count tokens in a prompt or file: `token <text>` or `token --file <path>`.
+    Token {
+        /// The text to count.
+        text: Option<String>,
+        /// Read the text from a file instead of the argument.
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// List hooks configured in the config.
+    Hooks,
+    /// Show the permission policy for tools.
+    Permission,
     /// Write a sample config file to the default location.
     Init,
 }
@@ -390,6 +418,11 @@ fn print_help() {
          diff                                          show the git diff\n\
          commit [--all] [message]                      commit changes\n\
          build / test / lint                           run project commands\n\
+         serve [--bind ADDR]                           start the HTTP API\n\
+         backup <path> / restore <path>                 backup/restore state\n\
+         token <text> [--file]                         count tokens\n\
+         hooks                                         list hooks\n\
+         permission                                    show tool permissions\n\
          browser <url> [--eval] [--click] [--type] [--screenshot]  browser\n\
          desktop <screenshot|click|type>               desktop control\n\
          plugin <list|enable|disable|add>              manage plugins\n\
@@ -1612,6 +1645,125 @@ fn dispatch(cli: Cli) -> Result<()> {
                 "glob benchmark: {iterations} iterations in {elapsed:.2}s ({:.0}/s)",
                 iterations as f64 / elapsed
             );
+            Ok(())
+        }
+        Command::Serve { bind } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring
+                .telemetry
+                .record("serve", serde_json::json!({ "bind": bind }))?;
+            crate::server::serve(&bind)
+        }
+        Command::Backup { path } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("backup", serde_json::json!({}))?;
+            let sessions_dir = crate::session::default_sessions_dir()?;
+            let sessions = crate::session::Session::list(&sessions_dir)?;
+            let mut session_data = serde_json::Map::new();
+            for id in &sessions {
+                if let Ok(s) = crate::session::Session::load(&sessions_dir, id) {
+                    if let Ok(json) = s.export() {
+                        session_data.insert(id.clone(), serde_json::Value::String(json));
+                    }
+                }
+            }
+            let memory_path = crate::memory::default_memory_path()?;
+            let memory = crate::memory::Memory::load(memory_path)?;
+            let backup = serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "created_at": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                "config": serde_json::to_value(&config)?,
+                "sessions": session_data,
+                "memory": serde_json::to_value(&memory)?,
+            });
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, serde_json::to_string_pretty(&backup)?)?;
+            println!(
+                "backed up {} session(s) and memory to {}",
+                sessions.len(),
+                path.display()
+            );
+            Ok(())
+        }
+        Command::Restore { path } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("restore", serde_json::json!({}))?;
+            let raw = std::fs::read_to_string(&path)?;
+            let backup: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| crate::error::Error::InvalidArgs(format!("bad backup: {e}")))?;
+            // Restore memory.
+            if let Some(mem) = backup.get("memory") {
+                let memory_path = crate::memory::default_memory_path()?;
+                if let Some(parent) = memory_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&memory_path, serde_json::to_string_pretty(mem)?)?;
+            }
+            // Restore sessions.
+            if let Some(sessions) = backup
+                .get("sessions")
+                .and_then(serde_json::Value::as_object)
+            {
+                let sessions_dir = crate::session::default_sessions_dir()?;
+                std::fs::create_dir_all(&sessions_dir)?;
+                for (_id, val) in sessions {
+                    if let Some(json) = val.as_str() {
+                        if let Ok(s) = crate::session::Session::import(json) {
+                            let _ = s.save(&sessions_dir);
+                        }
+                    }
+                }
+            }
+            println!("restored from {}", path.display());
+            Ok(())
+        }
+        Command::Token { text, file } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            wiring.telemetry.record("token", serde_json::json!({}))?;
+            let text = if let Some(f) = file {
+                std::fs::read_to_string(&f)?
+            } else {
+                text.ok_or_else(|| {
+                    crate::error::Error::InvalidArgs("provide text or --file <path>".into())
+                })?
+            };
+            let count = crate::context::estimate_tokens(&text);
+            println!("{count} tokens");
+            Ok(())
+        }
+        Command::Hooks => {
+            let config = Config::load()?;
+            if config.hooks.is_empty() {
+                println!("no hooks configured");
+            } else {
+                for h in &config.hooks {
+                    let before = h.before.as_deref().unwrap_or("-");
+                    let after = h.after.as_deref().unwrap_or("-");
+                    println!("{}: before={before} after={after}", h.name);
+                }
+            }
+            Ok(())
+        }
+        Command::Permission => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            let registry = wiring.registry;
+            for name in registry.names() {
+                let declared = registry
+                    .get(&name)
+                    .map(|t| t.permission())
+                    .unwrap_or(crate::permission::Permission::Allow);
+                println!("{name}: {declared:?}");
+            }
             Ok(())
         }
         Command::Init => {
