@@ -409,6 +409,8 @@ pub enum ConfigAction {
     },
     /// Validate the config file and report any problems.
     Validate,
+    /// Print the path to the config file.
+    Path,
 }
 
 /// Subcommands for `forge telemetry`.
@@ -484,6 +486,56 @@ pub enum GitAction {
     Remote,
     /// Show the working tree status.
     Status,
+    /// Stage files: `git add <file>...`.
+    Add {
+        /// The files to stage.
+        files: Vec<String>,
+    },
+    /// Commit staged changes: `git commit [-m <msg>] [--all]`.
+    Commit {
+        /// The commit message.
+        message: Option<String>,
+        /// Stage all changes before committing.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Push commits to a remote: `git push [--remote <name>] [--branch <name>] [--force]`.
+    Push {
+        /// The remote name (default: origin).
+        #[arg(long)]
+        remote: Option<String>,
+        /// The branch to push (default: current branch).
+        #[arg(long)]
+        branch: Option<String>,
+        /// Force the push.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Pull changes from the remote.
+    Pull,
+    /// Fetch changes from the remote.
+    Fetch,
+    /// Reset the working tree: `git reset [--soft|--hard] [<commit>]`.
+    Reset {
+        /// Soft reset (keep changes staged).
+        #[arg(long)]
+        soft: bool,
+        /// Hard reset (discard changes).
+        #[arg(long)]
+        hard: bool,
+        /// The commit to reset to (default: HEAD).
+        commit: Option<String>,
+    },
+    /// Show a commit: `git show <ref>`.
+    Show {
+        /// The commit reference.
+        reference: String,
+    },
+    /// Merge a branch into the current branch: `git merge <branch>`.
+    Merge {
+        /// The branch to merge.
+        branch: String,
+    },
 }
 
 /// Subcommands for `forge sandbox`.
@@ -1099,6 +1151,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                     memory.save()?;
                     println!("imported {count} fact(s) from {path}");
                 }
+                "search" => {
+                    let query = key
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("query required".into()))?;
+                    let hits = memory.search(&query);
+                    if hits.is_empty() {
+                        println!("(no matches)");
+                    } else {
+                        for (k, v) in hits {
+                            println!("{k}: {v}");
+                        }
+                    }
+                }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
                         "unknown action {other}"
@@ -1671,6 +1735,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Get { .. }) => "get",
                 Some(ConfigAction::Set { .. }) => "set",
                 Some(ConfigAction::Validate) => "validate",
+                Some(ConfigAction::Path) => "path",
             };
             wiring
                 .telemetry
@@ -1774,6 +1839,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Validate) => {
                     config.validate()?;
                     println!("config valid");
+                }
+                Some(ConfigAction::Path) => {
+                    println!("{}", crate::config::config_path()?.display());
                 }
             }
             Ok(())
@@ -2565,6 +2633,142 @@ fn dispatch(cli: Cli) -> Result<()> {
                         )));
                     }
                     println!("created tag {name}");
+                }
+                GitAction::Add { files } => {
+                    if files.is_empty() {
+                        return Err(crate::error::Error::InvalidArgs(
+                            "at least one file required".into(),
+                        ));
+                    }
+                    let status = std::process::Command::new("git")
+                        .arg("add")
+                        .args(&files)
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git add failed with {status}"
+                        )));
+                    }
+                    println!("staged {} file(s)", files.len());
+                }
+                GitAction::Commit { message, all } => {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.arg("commit").current_dir(&ws);
+                    if all {
+                        cmd.arg("-a");
+                    }
+                    match message {
+                        Some(msg) => {
+                            cmd.args(["-m", &msg]);
+                        }
+                        None => {
+                            cmd.arg("--no-edit");
+                        }
+                    }
+                    let status = cmd.status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git commit failed with {status}"
+                        )));
+                    }
+                    println!("committed");
+                }
+                GitAction::Push {
+                    remote,
+                    branch,
+                    force,
+                } => {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.arg("push").current_dir(&ws);
+                    if force {
+                        cmd.arg("--force");
+                    }
+                    // `git push <remote> <branch>`: if a branch is given but no
+                    // remote, default the remote to `origin`.
+                    if branch.is_some() && remote.is_none() {
+                        cmd.arg("origin");
+                    }
+                    if let Some(remote) = remote {
+                        cmd.arg(&remote);
+                    }
+                    if let Some(branch) = branch {
+                        cmd.arg(&branch);
+                    }
+                    let status = cmd.status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git push failed with {status}"
+                        )));
+                    }
+                    println!("pushed");
+                }
+                GitAction::Pull => {
+                    let status = std::process::Command::new("git")
+                        .args(["pull"])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git pull failed with {status}"
+                        )));
+                    }
+                    println!("pulled");
+                }
+                GitAction::Fetch => {
+                    let status = std::process::Command::new("git")
+                        .args(["fetch"])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git fetch failed with {status}"
+                        )));
+                    }
+                    println!("fetched");
+                }
+                GitAction::Reset { soft, hard, commit } => {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.arg("reset").current_dir(&ws);
+                    if soft {
+                        cmd.arg("--soft");
+                    } else if hard {
+                        cmd.arg("--hard");
+                    }
+                    if let Some(commit) = commit {
+                        cmd.arg(&commit);
+                    }
+                    let status = cmd.status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git reset failed with {status}"
+                        )));
+                    }
+                    println!("reset done");
+                }
+                GitAction::Show { reference } => {
+                    let out = std::process::Command::new("git")
+                        .args(["show", &reference])
+                        .current_dir(&ws)
+                        .output()?;
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        println!("no output for {reference}");
+                    } else {
+                        println!("{text}");
+                    }
+                }
+                GitAction::Merge { branch } => {
+                    let status = std::process::Command::new("git")
+                        .args(["merge", &branch])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git merge {branch} failed with {status}"
+                        )));
+                    }
+                    println!("merged {branch}");
                 }
             }
             Ok(())

@@ -87,6 +87,19 @@ impl Memory {
         }
         Ok(count)
     }
+
+    /// Search facts whose key or value contains the query (case-insensitive).
+    pub fn search(&self, query: &str) -> Vec<(String, String)> {
+        let q = query.to_lowercase();
+        let mut hits: Vec<(String, String)> = self
+            .facts
+            .iter()
+            .filter(|(k, v)| k.to_lowercase().contains(&q) || v.to_lowercase().contains(&q))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        hits.sort();
+        hits
+    }
 }
 
 /// The default memory file: `~/.local/share/forge/memory.json`.
@@ -204,5 +217,21 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(memory.recall("editor"), Some("vim"));
         assert_eq!(memory.recall("lang"), Some("go"));
+    }
+
+    #[test]
+    fn search_matches_key_or_value_case_insensitively() {
+        let mut memory = Memory::new();
+        memory.remember("lang", "rust");
+        memory.remember("editor", "Vim");
+        memory.remember("os", "linux");
+        let hits = memory.search("vim");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, "editor");
+        let hits = memory.search("RUST");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, "lang");
+        let hits = memory.search("nope");
+        assert!(hits.is_empty());
     }
 }
