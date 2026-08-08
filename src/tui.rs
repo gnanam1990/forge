@@ -75,7 +75,7 @@ impl App {
             match prompt.as_str() {
                 "/help" => {
                     self.messages.push(
-                        "commands: /help, /model, /tools, /memory, /context, /stats, /sessions, /clear, /exit".into(),
+                        "commands: /help, /model, /tools, /memory, /context, /stats, /version, /env, /sessions, /clear, /exit".into(),
                     );
                 }
                 "/model" => {
@@ -106,6 +106,21 @@ impl App {
                         self.session.id,
                         self.session.message_count(),
                         self.session.token_usage()
+                    ));
+                }
+                "/version" => {
+                    self.messages
+                        .push(format!("forge {}", env!("CARGO_PKG_VERSION")));
+                }
+                "/env" => {
+                    self.messages.push(format!("os: {}", std::env::consts::OS));
+                    self.messages
+                        .push(format!("arch: {}", std::env::consts::ARCH));
+                    self.messages.push(format!(
+                        "cwd: {}",
+                        std::env::current_dir()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|_| "?".into())
                     ));
                 }
                 "/stats" => {

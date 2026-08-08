@@ -44,6 +44,17 @@ impl Sandbox {
         }
     }
 
+    /// Describe the sandbox configuration.
+    pub fn status(&self) -> String {
+        format!(
+            "enabled: {}\nwork_dir: {}\ndeny_network: {}\ndeny_write: {}",
+            self.enabled,
+            self.work_dir.display(),
+            self.config.deny_network,
+            self.config.deny_write
+        )
+    }
+
     /// Run a command in the sandbox. Returns combined output and exit code.
     pub fn run(&self, command: &str) -> Result<SandboxResult> {
         std::fs::create_dir_all(&self.work_dir)?;

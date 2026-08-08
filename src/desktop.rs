@@ -47,6 +47,21 @@ impl Desktop {
         self.cliclick(&[&format!("t:{text}")])
     }
 
+    /// Press a key (e.g. "return", "tab", "escape").
+    pub fn key(&self, key: &str) -> Result<()> {
+        self.cliclick(&[&format!("k:{key}")])
+    }
+
+    /// Scroll by a delta (positive = up, negative = down).
+    pub fn scroll(&self, delta: i32) -> Result<()> {
+        self.cliclick(&[&format!("w:{}", delta)])
+    }
+
+    /// Double-click at a coordinate.
+    pub fn double_click(&self, x: i32, y: i32) -> Result<()> {
+        self.cliclick(&[&format!("d:{x},{y}")])
+    }
+
     /// Run a cliclick command.
     fn cliclick(&self, args: &[&str]) -> Result<()> {
         if !cfg!(target_os = "macos") {

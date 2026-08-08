@@ -335,7 +335,14 @@ pub enum Command {
         file: Option<PathBuf>,
     },
     /// List hooks configured in the config.
-    Hooks,
+    Hooks {
+        /// Action: list (default) | add | remove.
+        action: Option<String>,
+        /// Hook name (for add/remove).
+        name: Option<String>,
+        /// Shell command (for add).
+        command: Option<String>,
+    },
     /// Show the permission policy for tools.
     Permission,
     /// Run git subcommands: `git <log|branch|branch-create|switch|stash list|blame|tag|remote|status>`.
@@ -490,6 +497,18 @@ pub enum ModelAction {
     },
     /// List saved providers.
     List,
+    /// Add a saved provider.
+    Add {
+        /// The model name.
+        model: String,
+        /// Optional base URL.
+        base_url: Option<String>,
+    },
+    /// Remove a saved provider by index or model name.
+    Remove {
+        /// The provider index or model name.
+        target: String,
+    },
 }
 
 /// Subcommands for `forge provider`.
@@ -517,6 +536,11 @@ pub enum ProviderAction {
     Remove {
         /// The provider index or model name.
         target: String,
+    },
+    /// Set the active provider's base URL.
+    SetUrl {
+        /// The base URL.
+        url: String,
     },
 }
 
@@ -554,6 +578,8 @@ pub enum SessionAction {
         /// The input file path.
         path: PathBuf,
     },
+    /// Delete all sessions.
+    Clear,
 }
 
 /// Subcommands for `forge git stash`.
@@ -804,6 +830,8 @@ pub enum SandboxAction {
         /// The command to run.
         command: String,
     },
+    /// Show the sandbox configuration.
+    Status,
 }
 
 /// Subcommands for `forge mcp`.
@@ -839,6 +867,8 @@ pub enum McpAction {
         /// The server name.
         name: String,
     },
+    /// Show the status of all registered MCP servers.
+    Status,
 }
 
 /// Run the CLI and return a process exit code.
@@ -1633,6 +1663,26 @@ fn dispatch(cli: Cli) -> Result<()> {
                 }
                 Ok(())
             }
+            McpAction::Status => {
+                let config = Config::load()?;
+                if config.mcp_servers.is_empty() {
+                    println!("no MCP servers registered");
+                } else {
+                    for s in &config.mcp_servers {
+                        let args: Vec<&str> = s.args.iter().map(String::as_str).collect();
+                        match crate::mcp::McpClient::connect(&s.command, &args) {
+                            Ok(mut client) => match client.list_tools() {
+                                Ok(tools) => {
+                                    println!("{}: OK ({} tool(s))", s.name, tools.len());
+                                }
+                                Err(e) => println!("{}: error ({e})", s.name),
+                            },
+                            Err(e) => println!("{}: error ({e})", s.name),
+                        }
+                    }
+                }
+                Ok(())
+            }
         },
         Command::Diff {
             staged,
@@ -1920,6 +1970,43 @@ fn dispatch(cli: Cli) -> Result<()> {
                     let text = args.join(" ");
                     desktop.type_text(&text)?;
                     println!("typed");
+                }
+                "key" => {
+                    let key = args.first().ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("key needs a key name".into())
+                    })?;
+                    desktop.key(key)?;
+                    println!("pressed {key}");
+                }
+                "scroll" => {
+                    let delta: i32 =
+                        args.first().and_then(|s| s.parse().ok()).ok_or_else(|| {
+                            crate::error::Error::InvalidArgs("scroll needs a delta".into())
+                        })?;
+                    desktop.scroll(delta)?;
+                    println!("scrolled {delta}");
+                }
+                "double-click" => {
+                    let x: i32 = args.first().and_then(|s| s.parse().ok()).ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("double-click needs x y".into())
+                    })?;
+                    let y: i32 = args.get(1).and_then(|s| s.parse().ok()).ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("double-click needs x y".into())
+                    })?;
+                    desktop.double_click(x, y)?;
+                    println!("double-clicked {x},{y}");
+                }
+                "move" => {
+                    let x: i32 = args
+                        .first()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("move needs x y".into()))?;
+                    let y: i32 = args
+                        .get(1)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("move needs x y".into()))?;
+                    desktop.move_to(x, y)?;
+                    println!("moved to {x},{y}");
                 }
                 other => {
                     return Err(crate::error::Error::InvalidArgs(format!(
@@ -2412,6 +2499,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                         session.message_count()
                     );
                 }
+                SessionAction::Clear => {
+                    let ids = crate::session::Session::list(&dir)?;
+                    for id in &ids {
+                        let path = dir.join(format!("{id}.json"));
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    println!("cleared {} session(s)", ids.len());
+                }
             }
             Ok(())
         }
@@ -2558,6 +2653,16 @@ fn dispatch(cli: Cli) -> Result<()> {
                 }
                 return Ok(());
             }
+            if name.as_deref() == Some("clear") {
+                let count = config.aliases.len();
+                config.aliases.clear();
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                println!("cleared {count} alias(es)");
+                return Ok(());
+            }
             match (name, command) {
                 (None, _) => {
                     // List all aliases.
@@ -2656,6 +2761,19 @@ fn dispatch(cli: Cli) -> Result<()> {
                     std::fs::copy(&file, &dest)?;
                     registry.load_dir(&dir)?;
                     println!("added plugin from {file}");
+                }
+                "remove" => {
+                    let name = arg.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("plugin name required".into())
+                    })?;
+                    let file = dir.join(format!("{name}.json"));
+                    if file.exists() {
+                        std::fs::remove_file(&file)?;
+                        registry.load_dir(&dir)?;
+                        println!("removed plugin {name}");
+                    } else {
+                        println!("no plugin file {name}.json");
+                    }
                 }
                 "docs" => {
                     println!(
@@ -2773,6 +2891,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 ProviderAction::List => "list",
                 ProviderAction::Add { .. } => "add",
                 ProviderAction::Remove { .. } => "remove",
+                ProviderAction::SetUrl { .. } => "set-url",
             };
             wiring
                 .telemetry
@@ -2866,6 +2985,16 @@ fn dispatch(cli: Cli) -> Result<()> {
                         std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                         println!("removed provider {target}");
                     }
+                }
+                ProviderAction::SetUrl { url } => {
+                    let path = crate::config::config_path()?;
+                    let mut config = config;
+                    config.provider.base_url = Some(url.clone());
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("set base_url to {url}");
                 }
             }
             Ok(())
@@ -3129,15 +3258,63 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("{count} tokens");
             Ok(())
         }
-        Command::Hooks => {
-            let config = Config::load()?;
-            if config.hooks.is_empty() {
-                println!("no hooks configured");
-            } else {
-                for h in &config.hooks {
-                    let before = h.before.as_deref().unwrap_or("-");
-                    let after = h.after.as_deref().unwrap_or("-");
-                    println!("{}: before={before} after={after}", h.name);
+        Command::Hooks {
+            action,
+            name,
+            command,
+        } => {
+            let path = crate::config::config_path()?;
+            let mut config = Config::load()?;
+            match action.as_deref().unwrap_or("list") {
+                "list" => {
+                    if config.hooks.is_empty() {
+                        println!("no hooks configured");
+                    } else {
+                        for h in &config.hooks {
+                            let before = h.before.as_deref().unwrap_or("-");
+                            let after = h.after.as_deref().unwrap_or("-");
+                            println!("{}: before={before} after={after}", h.name);
+                        }
+                    }
+                }
+                "add" => {
+                    let name = name.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("hook name required".into())
+                    })?;
+                    let command = command.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("hook command required".into())
+                    })?;
+                    config.hooks.push(crate::config::HookConfig {
+                        name: name.clone(),
+                        before: Some(command.clone()),
+                        after: None,
+                    });
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("added hook {name}");
+                }
+                "remove" => {
+                    let name = name.ok_or_else(|| {
+                        crate::error::Error::InvalidArgs("hook name required".into())
+                    })?;
+                    let before = config.hooks.len();
+                    config.hooks.retain(|h| h.name != name);
+                    if config.hooks.len() == before {
+                        println!("no hook named {name}");
+                    } else {
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                        println!("removed hook {name}");
+                    }
+                }
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unknown hooks action {other}"
+                    )))
                 }
             }
             Ok(())
@@ -3741,6 +3918,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                         )));
                     }
                 }
+                SandboxAction::Status => {
+                    let sandbox = crate::sandbox::Sandbox::new(true);
+                    println!("{}", sandbox.status());
+                }
             }
             Ok(())
         }
@@ -3826,6 +4007,45 @@ fn dispatch(cli: Cli) -> Result<()> {
                             provider.base_url.as_deref().unwrap_or("(default)")
                         );
                     }
+                }
+                Ok(())
+            }
+            ModelAction::Add { model, base_url } => {
+                let path = crate::config::config_path()?;
+                let mut config = Config::load()?;
+                config.saved_providers.push(crate::config::ProviderConfig {
+                    model: Some(model.clone()),
+                    base_url: base_url.clone(),
+                    ..Default::default()
+                });
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                println!("added provider {model}");
+                Ok(())
+            }
+            ModelAction::Remove { target } => {
+                let path = crate::config::config_path()?;
+                let mut config = Config::load()?;
+                let before = config.saved_providers.len();
+                if let Ok(idx) = target.parse::<usize>() {
+                    if idx < config.saved_providers.len() {
+                        config.saved_providers.remove(idx);
+                    }
+                } else {
+                    config
+                        .saved_providers
+                        .retain(|p| p.model.as_deref() != Some(target.as_str()));
+                }
+                if config.saved_providers.len() == before {
+                    println!("no saved provider {target}");
+                } else {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("removed provider {target}");
                 }
                 Ok(())
             }
