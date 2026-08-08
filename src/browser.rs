@@ -363,6 +363,113 @@ impl Browser {
         )
     }
 
+    /// Get the visible text of the page (only visible elements).
+    pub fn get_visible_text(&self, target: &Target) -> Result<String> {
+        self.evaluate(
+            target,
+            "(() => { const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); const parts = []; while (walker.nextNode()) { const n = walker.currentNode; if (n.parentElement && n.parentElement.offsetParent !== null) parts.push(n.textContent); } return parts.join(' '); })()",
+        )
+    }
+
+    /// Get the outer HTML of the first element matching a selector.
+    pub fn get_outer_html(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? e.outerHTML : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the inner HTML of the first element matching a selector.
+    pub fn get_inner_html(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? e.innerHTML : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// List the direct children of the first element matching a selector.
+    pub fn get_children(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); if (!e) return ''; return Array.from(e.children).map(c => c.tagName + '#' + (c.id || '') + '.' + (c.className || '')).join('\\n'); }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the parent of the first element matching a selector.
+    pub fn get_parent(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); if (!e || !e.parentElement) return ''; const p = e.parentElement; return p.tagName + '#' + (p.id || '') + '.' + (p.className || ''); }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the class list of the first element matching a selector.
+    pub fn get_class_list(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? e.className : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the inline style of the first element matching a selector.
+    pub fn get_style(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? e.getAttribute('style') || '' : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get whether the first element matching a selector is checked.
+    pub fn get_checked(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? String(e.checked) : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the placeholder of the first element matching a selector.
+    pub fn get_placeholder(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? (e.placeholder || '') : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the href of the first element matching a selector.
+    pub fn get_href(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? (e.href || '') : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the src of the first element matching a selector.
+    pub fn get_src(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? (e.src || '') : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
+    /// Get the alt text of the first element matching a selector.
+    pub fn get_alt(&self, target: &Target, selector: &str) -> Result<String> {
+        let expr = format!(
+            "(() => {{ const e = document.querySelector({}); return e ? (e.alt || '') : ''; }})()",
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(target, &expr)
+    }
+
     /// List the form input fields on the page.
     pub fn get_form_fields(&self, target: &Target) -> Result<String> {
         self.evaluate(

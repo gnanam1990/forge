@@ -28,6 +28,9 @@ struct App {
     session: Session,
     sessions_dir: std::path::PathBuf,
     telemetry: crate::telemetry::Telemetry,
+    scroll: usize,
+    history: Vec<String>,
+    history_index: Option<usize>,
 }
 
 impl App {
@@ -45,6 +48,9 @@ impl App {
             session,
             sessions_dir,
             telemetry,
+            scroll: 0,
+            history: Vec::new(),
+            history_index: None,
         }
     }
 
@@ -55,6 +61,8 @@ impl App {
             return Ok(());
         }
         self.input.clear();
+        self.history.push(prompt.clone());
+        self.history_index = None;
         self.messages.push(format!("> {prompt}"));
         self.status = "running…".into();
         match self.agent.run_into(&mut self.session.messages, &prompt) {
@@ -145,6 +153,35 @@ fn run_loop(
                             app.input.pop();
                         }
                         KeyCode::Enter => app.submit()?,
+                        KeyCode::Up => {
+                            // Navigate input history.
+                            let idx = app
+                                .history_index
+                                .map(|i| i.saturating_sub(1))
+                                .unwrap_or(app.history.len().saturating_sub(1));
+                            if let Some(entry) = app.history.get(idx) {
+                                app.input = entry.clone();
+                                app.history_index = Some(idx);
+                            }
+                        }
+                        KeyCode::Down => {
+                            if let Some(idx) = app.history_index {
+                                let next = idx + 1;
+                                if next < app.history.len() {
+                                    app.input = app.history[next].clone();
+                                    app.history_index = Some(next);
+                                } else {
+                                    app.input.clear();
+                                    app.history_index = None;
+                                }
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            app.scroll = app.scroll.saturating_add(10);
+                        }
+                        KeyCode::PageDown => {
+                            app.scroll = app.scroll.saturating_sub(10);
+                        }
                         _ => {}
                     }
                 }
@@ -169,7 +206,9 @@ fn draw(f: &mut Frame, app: &App) {
         .map(|m| ListItem::new(m.as_str()))
         .collect();
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title("forge"));
-    f.render_widget(list, chunks[0]);
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(Some(app.scroll));
+    f.render_stateful_widget(list, chunks[0], &mut state);
 
     let input = Paragraph::new(app.input.as_str())
         .block(Block::default().borders(Borders::ALL).title("input"));

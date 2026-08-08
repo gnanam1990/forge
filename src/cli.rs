@@ -37,6 +37,15 @@ pub enum Command {
     Version,
     /// List the built-in model catalog.
     Models,
+    /// Show or set the provider: `provider [show|set <model>]`.
+    Provider {
+        /// Action: show | set.
+        action: Option<String>,
+        /// Model to set (for `set`).
+        model: Option<String>,
+    },
+    /// Print a short usage guide.
+    Docs,
     /// Print a summary of all commands.
     Help,
     /// List the available tools.
@@ -855,6 +864,57 @@ fn dispatch(cli: Cli) -> Result<()> {
             for model in crate::models::MODELS {
                 println!("{model}");
             }
+            Ok(())
+        }
+        Command::Provider { action, model } => {
+            let config = Config::load()?;
+            let wiring = crate::wiring::build_wiring(&config)?;
+            match action.as_deref().unwrap_or("show") {
+                "show" => {
+                    println!(
+                        "base_url: {}",
+                        config.provider.base_url.as_deref().unwrap_or("(default)")
+                    );
+                    println!(
+                        "model: {}",
+                        config.provider.model.as_deref().unwrap_or("(none)")
+                    );
+                    println!(
+                        "api_key: {}",
+                        if config.provider.api_key.is_some() {
+                            "set"
+                        } else {
+                            "unset"
+                        }
+                    );
+                }
+                "set" => {
+                    let model = model
+                        .ok_or_else(|| crate::error::Error::InvalidArgs("model required".into()))?;
+                    let path = crate::config::config_path()?;
+                    let mut config = config;
+                    config.provider.model = Some(model.clone());
+                    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+                    println!("set model to {model}");
+                }
+                other => {
+                    return Err(crate::error::Error::InvalidArgs(format!(
+                        "unknown provider action {other}"
+                    )))
+                }
+            }
+            wiring
+                .telemetry
+                .record("provider", serde_json::json!({ "action": action }))?;
+            Ok(())
+        }
+        Command::Docs => {
+            println!(
+                "forge — a coding agent in Rust\n\n\
+                 Quick start:\n  forge setup          write config + samples\n  \
+                 forge run \"hello\"   run the agent\n  forge chat          interactive TUI\n\n\
+                 See `forge help` for all commands, and README.md for the full guide."
+            );
             Ok(())
         }
         Command::Init => {

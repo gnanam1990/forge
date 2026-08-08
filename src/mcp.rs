@@ -329,6 +329,51 @@ impl McpClient {
             .map(str::to_string)
             .collect())
     }
+
+    /// The server's reported capabilities.
+    pub fn capabilities(&self) -> String {
+        self.server_info
+            .get("capabilities")
+            .map(|c| serde_json::to_string_pretty(c).unwrap_or_default())
+            .unwrap_or_else(|| "{}".into())
+    }
+
+    /// The negotiated protocol version.
+    pub fn protocol_version(&self) -> String {
+        self.server_info
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
+    /// Get the input schema for a tool.
+    pub fn tool_schema(&mut self, name: &str) -> Result<String> {
+        let result = self.request("tools/list", json!({}))?;
+        let tools = result
+            .get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for tool in tools {
+            if tool.get("name").and_then(Value::as_str) == Some(name) {
+                return Ok(serde_json::to_string_pretty(
+                    tool.get("inputSchema").unwrap_or(&Value::Null),
+                )?);
+            }
+        }
+        Err(Error::Provider(format!("unknown tool {name}")))
+    }
+
+    /// Get the current logging level.
+    pub fn logging_level(&mut self) -> Result<String> {
+        let result = self.request("logging/getLevel", json!({}))?;
+        Ok(result
+            .get("level")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string())
+    }
 }
 
 impl Drop for McpClient {
