@@ -69,6 +69,11 @@ built to be simple, testable, and easy to extend.
 - **`forge info`** — prints version, workspace, model, tool and session counts.
 - **`forge version` / `forge models` / `forge help` / `forge docs`** — version,
   model catalog, command summary, and a quick-start guide.
+- **`forge stats` / `forge env`** — usage stats from telemetry and environment
+  info.
+- **`forge shell`** — an interactive shell session (real pty).
+- **`forge watch <dir> <cmd>`** — run a command when files change.
+- **`forge benchmark`** — a simple tool benchmark.
 - **`forge provider`** — show, set, list, or add providers (multi-model support).
 - **`forge plugin docs`** — a guide to the plugin format and commands.
 - **TUI command palette** — `/help`, `/sessions`, `/exit` inside the chat UI.

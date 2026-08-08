@@ -1,5 +1,6 @@
 //! Command-line interface for forge.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -46,6 +47,21 @@ pub enum Command {
     },
     /// Print a short usage guide.
     Docs,
+    /// Show usage stats from telemetry.
+    Stats,
+    /// Show environment information.
+    Env,
+    /// Start an interactive shell session.
+    Shell,
+    /// Watch a directory and run a command on change: `watch <dir> <command>`.
+    Watch {
+        /// The directory to watch.
+        dir: PathBuf,
+        /// The command to run on change.
+        command: String,
+    },
+    /// Run a simple benchmark.
+    Benchmark,
     /// Print a summary of all commands.
     Help,
     /// List the available tools.
@@ -951,6 +967,135 @@ fn dispatch(cli: Cli) -> Result<()> {
                  Quick start:\n  forge setup          write config + samples\n  \
                  forge run \"hello\"   run the agent\n  forge chat          interactive TUI\n\n\
                  See `forge help` for all commands, and README.md for the full guide."
+            );
+            Ok(())
+        }
+        Command::Stats => {
+            let path = crate::telemetry::default_telemetry_path()?;
+            let mut counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                for line in raw.lines() {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(event) = value.get("event").and_then(serde_json::Value::as_str)
+                        {
+                            *counts.entry(event.to_string()).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+            if counts.is_empty() {
+                println!("no usage data yet");
+            } else {
+                for (event, count) in counts {
+                    println!("{event}: {count}");
+                }
+            }
+            Ok(())
+        }
+        Command::Env => {
+            println!("forge {}", env!("CARGO_PKG_VERSION"));
+            println!("os: {}", std::env::consts::OS);
+            println!("arch: {}", std::env::consts::ARCH);
+            println!(
+                "cwd: {}",
+                std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "?".into())
+            );
+            println!(
+                "home: {}",
+                std::env::var("HOME").unwrap_or_else(|_| "?".into())
+            );
+            println!(
+                "config: {}",
+                crate::config::config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "?".into())
+            );
+            Ok(())
+        }
+        Command::Shell => {
+            let mut session = crate::tools::terminal::TerminalSession::spawn()?;
+            println!("forge shell — type commands, or /exit to quit.");
+            loop {
+                print!("$ ");
+                std::io::stdout().flush()?;
+                let mut line = String::new();
+                if std::io::stdin().read_line(&mut line)? == 0 {
+                    break;
+                }
+                let line = line.trim();
+                if line == "/exit" || line == "/quit" {
+                    break;
+                }
+                if line.is_empty() {
+                    continue;
+                }
+                session.send(line)?;
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let output = session.read()?;
+                print!("{output}");
+                std::io::stdout().flush()?;
+            }
+            Ok(())
+        }
+        Command::Watch { dir, command } => {
+            println!(
+                "watching {} — run `{}` on change (Ctrl+C to stop)",
+                dir.display(),
+                command
+            );
+            let mut last: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime> =
+                std::collections::HashMap::new();
+            loop {
+                let mut changed = false;
+                for entry in walkdir::WalkDir::new(&dir)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    if entry.file_type().is_file() {
+                        if let Ok(meta) = entry.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                if last
+                                    .get(entry.path())
+                                    .map(|t| *t != modified)
+                                    .unwrap_or(true)
+                                {
+                                    last.insert(entry.path().to_path_buf(), modified);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if changed {
+                    let output = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&command)
+                        .output()?;
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    std::io::stdout().flush()?;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        Command::Benchmark => {
+            // A simple benchmark: run the glob tool over the workspace repeatedly.
+            let config = Config::load()?;
+            let registry = Registry::builtin();
+            let ctx = crate::tools::ToolContext::new(config.workspace_root());
+            let glob = registry.get("glob").unwrap();
+            let start = std::time::Instant::now();
+            let mut iterations = 0usize;
+            while start.elapsed() < std::time::Duration::from_secs(2) {
+                let _ = glob.run(&serde_json::json!({"pattern": "**/*.rs"}), &ctx);
+                iterations += 1;
+            }
+            let elapsed = start.elapsed().as_secs_f64();
+            println!(
+                "glob benchmark: {iterations} iterations in {elapsed:.2}s ({:.0}/s)",
+                iterations as f64 / elapsed
             );
             Ok(())
         }
