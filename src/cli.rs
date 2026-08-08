@@ -543,6 +543,12 @@ pub enum GitAction {
         /// Filter commits by author.
         #[arg(long)]
         author: Option<String>,
+        /// Filter commits whose message matches a pattern.
+        #[arg(long)]
+        grep: Option<String>,
+        /// Show only commits after a date (e.g. "2024-01-01", "2 weeks ago").
+        #[arg(long)]
+        since: Option<String>,
     },
     /// List branches.
     Branch,
@@ -623,6 +629,9 @@ pub enum GitAction {
     Show {
         /// The commit reference.
         reference: String,
+        /// Show diff statistics.
+        #[arg(long)]
+        stat: bool,
     },
     /// Merge a branch into the current branch: `git merge <branch>`.
     Merge {
@@ -639,6 +648,28 @@ pub enum GitAction {
         /// Force removal (required by git).
         #[arg(long)]
         force: bool,
+    },
+    /// Show the diff: `git diff [--staged] [--stat] [--name-only]`.
+    Diff {
+        /// Show only staged changes.
+        #[arg(long)]
+        staged: bool,
+        /// Show diff statistics instead of the full diff.
+        #[arg(long)]
+        stat: bool,
+        /// List only the names of changed files.
+        #[arg(long)]
+        name_only: bool,
+    },
+    /// Cherry-pick a commit onto the current branch: `git cherry-pick <commit>`.
+    CherryPick {
+        /// The commit to apply.
+        commit: String,
+    },
+    /// Rebase the current branch onto another branch: `git rebase <branch>`.
+    Rebase {
+        /// The branch to rebase onto.
+        branch: String,
     },
 }
 
@@ -2797,6 +2828,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                     limit,
                     stat,
                     author,
+                    grep,
+                    since,
                 } => {
                     let limit_str = limit.to_string();
                     let mut args: Vec<String> = vec![
@@ -2811,6 +2844,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                     if let Some(author) = author {
                         args.push("--author".into());
                         args.push(author);
+                    }
+                    if let Some(grep) = grep {
+                        args.push("--grep".into());
+                        args.push(grep);
+                    }
+                    if let Some(since) = since {
+                        args.push("--since".into());
+                        args.push(since);
                     }
                     let out = std::process::Command::new("git")
                         .args(&args)
@@ -3066,11 +3107,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                     println!("reset done");
                 }
-                GitAction::Show { reference } => {
-                    let out = std::process::Command::new("git")
-                        .args(["show", &reference])
-                        .current_dir(&ws)
-                        .output()?;
+                GitAction::Show { reference, stat } => {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.arg("show").current_dir(&ws);
+                    if stat {
+                        cmd.arg("--stat");
+                    }
+                    cmd.arg(&reference);
+                    let out = cmd.output()?;
                     let text = String::from_utf8_lossy(&out.stdout).into_owned();
                     if text.trim().is_empty() {
                         println!("no output for {reference}");
@@ -3117,6 +3161,58 @@ fn dispatch(cli: Cli) -> Result<()> {
                     } else {
                         println!("{text}");
                     }
+                }
+                GitAction::Diff {
+                    staged,
+                    stat,
+                    name_only,
+                } => {
+                    let base: &[&str] = if staged {
+                        &["diff", "--staged"]
+                    } else {
+                        &["diff", "HEAD"]
+                    };
+                    let mut args: Vec<&str> = base.to_vec();
+                    if stat {
+                        args.push("--stat");
+                    }
+                    if name_only {
+                        args.push("--name-only");
+                    }
+                    let out = std::process::Command::new("git")
+                        .args(&args)
+                        .current_dir(&ws)
+                        .output()?;
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        println!("no changes");
+                    } else {
+                        println!("{text}");
+                    }
+                }
+                GitAction::CherryPick { commit } => {
+                    let status = std::process::Command::new("git")
+                        .args(["cherry-pick", &commit])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git cherry-pick {commit} failed with {status}"
+                        )));
+                    }
+                    println!("cherry-picked {commit}");
+                }
+                GitAction::Rebase { branch } => {
+                    let status = std::process::Command::new("git")
+                        .args(["rebase", &branch])
+                        .current_dir(&ws)
+                        .status()?;
+                    if !status.success() {
+                        return Err(crate::error::Error::Tool(format!(
+                            "git rebase {branch} failed with {status}"
+                        )));
+                    }
+                    println!("rebased onto {branch}");
                 }
             }
             Ok(())

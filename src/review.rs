@@ -44,16 +44,53 @@ pub fn review_diff(diff: &str) -> Review {
                     message: format!("TODO/FIXME left in code: {content}"),
                 });
             }
-            if lower.contains("console.log") || lower.contains("println!") {
+            if lower.contains("hack") || lower.contains("xxx") {
+                review.findings.push(Finding {
+                    severity: Severity::Info,
+                    message: format!("HACK/XXX marker left in code: {content}"),
+                });
+            }
+            if lower.contains("console.log")
+                || lower.contains("console.error")
+                || lower.contains("println!")
+                || lower.contains("print_r")
+                || lower.contains("var_dump")
+                || lower.contains("dbg!")
+            {
                 review.findings.push(Finding {
                     severity: Severity::Info,
                     message: format!("debug print left in code: {content}"),
                 });
             }
-            if lower.contains("password") || lower.contains("secret") || lower.contains("api_key") {
+            if lower.contains("debugger") {
+                review.findings.push(Finding {
+                    severity: Severity::Warning,
+                    message: format!("debugger statement left in code: {content}"),
+                });
+            }
+            if lower.contains("password")
+                || lower.contains("secret")
+                || lower.contains("api_key")
+                || lower.contains("token")
+            {
                 review.findings.push(Finding {
                     severity: Severity::Error,
                     message: format!("possible secret in code: {content}"),
+                });
+            }
+            if lower.contains("todo!()")
+                || lower.contains("unimplemented!()")
+                || lower.contains("unreachable!()")
+            {
+                review.findings.push(Finding {
+                    severity: Severity::Warning,
+                    message: format!("placeholder/panic macro left in code: {content}"),
+                });
+            }
+            if lower.contains("http://") || lower.contains("https://") {
+                review.findings.push(Finding {
+                    severity: Severity::Info,
+                    message: format!("hardcoded URL in code: {content}"),
                 });
             }
         } else if line.starts_with('-') && !line.starts_with("---") {
@@ -131,6 +168,34 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.severity == Severity::Error));
+    }
+
+    #[test]
+    fn flags_dbg_url_and_todo_macro() {
+        let diff = "+fn run() {\n+    dbg!(x);\n+    let url = \"https://api.example.com\";\n+    todo!();\n+}\n";
+        let review = review_diff(diff);
+        assert!(review
+            .findings
+            .iter()
+            .any(|f| f.message.contains("debug print")));
+        assert!(review
+            .findings
+            .iter()
+            .any(|f| f.message.contains("hardcoded URL")));
+        assert!(review
+            .findings
+            .iter()
+            .any(|f| f.message.contains("placeholder")));
+    }
+
+    #[test]
+    fn flags_debugger_statement() {
+        let diff = "+    debugger;\n";
+        let review = review_diff(diff);
+        assert!(review
+            .findings
+            .iter()
+            .any(|f| f.message.contains("debugger")));
     }
 
     #[test]
