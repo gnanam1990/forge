@@ -1,13 +1,78 @@
-//! `terminal` — run a command in the workspace and return its output. A simple
-//! virtual-terminal tool for interactive-style commands.
+//! `terminal` — run a command in the workspace and return its output, plus a
+//! persistent terminal session that keeps a shell alive across commands.
 
-use std::process::Command;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::Value;
 
 use super::{string_arg, Tool, ToolContext, ToolResult};
 use crate::error::Result;
 use crate::permission::Permission;
+
+/// A persistent shell session: a long-lived `sh` process with piped stdin and
+/// stdout, so state (cwd, env, variables) survives across commands.
+pub struct TerminalSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl TerminalSession {
+    /// Spawn a persistent shell.
+    pub fn spawn() -> Result<Self> {
+        let mut child = Command::new("sh")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| crate::error::Error::Agent("no stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| crate::error::Error::Agent("no stdout".into()))?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
+    }
+
+    /// Send a command to the session.
+    pub fn send(&mut self, command: &str) -> Result<()> {
+        self.stdin.write_all(command.as_bytes())?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    /// Read all currently-available output from the session.
+    pub fn read(&mut self) -> Result<String> {
+        let mut out = String::new();
+        loop {
+            let mut buf = String::new();
+            let n = self.stdout.read_line(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            out.push_str(&buf);
+            if !buf.ends_with('\n') {
+                break;
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
 
 #[derive(Default)]
 pub struct TerminalTool;

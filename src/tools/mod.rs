@@ -15,6 +15,7 @@ pub mod search;
 pub mod ssh;
 pub mod terminal;
 pub mod web_fetch;
+pub mod web_search;
 pub mod write_file;
 
 use std::path::{Path, PathBuf};
@@ -131,6 +132,7 @@ impl Registry {
         registry.register(Box::new(search::SearchTool::new()));
         registry.register(Box::new(terminal::TerminalTool::new()));
         registry.register(Box::new(ssh::SshTool::new()));
+        registry.register(Box::new(web_search::WebSearchTool::new()));
         registry
     }
 

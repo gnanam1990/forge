@@ -114,6 +114,51 @@ impl McpClient {
         }
         Ok(text)
     }
+
+    /// List the resources the server exposes.
+    pub fn list_resources(&mut self) -> Result<Vec<String>> {
+        let result = self.request("resources/list", json!({}))?;
+        let resources = result
+            .get("resources")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(resources
+            .iter()
+            .filter_map(|r| r.get("uri").and_then(Value::as_str).map(str::to_string))
+            .collect())
+    }
+
+    /// Read a resource by URI.
+    pub fn read_resource(&mut self, uri: &str) -> Result<String> {
+        let result = self.request("resources/read", json!({ "uri": uri }))?;
+        let contents = result
+            .get("contents")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut text = String::new();
+        for item in contents {
+            if let Some(t) = item.get("text").and_then(Value::as_str) {
+                text.push_str(t);
+            }
+        }
+        Ok(text)
+    }
+
+    /// List the prompts the server exposes.
+    pub fn list_prompts(&mut self) -> Result<Vec<String>> {
+        let result = self.request("prompts/list", json!({}))?;
+        let prompts = result
+            .get("prompts")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(prompts
+            .iter()
+            .filter_map(|p| p.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect())
+    }
 }
 
 impl Drop for McpClient {

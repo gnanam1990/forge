@@ -1,8 +1,13 @@
 //! Plugins: a named bundle of tools and hooks that can be registered into the
-//! agent. Plugins let third parties extend forge without touching core.
+//! agent. Plugins let third parties extend forge without touching core. Plugins
+//! can be built in code or loaded from a directory of JSON files.
+
+use std::path::Path;
+
+use serde::Deserialize;
 
 use crate::hooks::HookDispatcher;
-use crate::tools::{Registry, Tool};
+use crate::tools::{Registry, Tool, ToolContext, ToolResult};
 
 /// A plugin: a name plus the tools and hooks it contributes.
 pub struct Plugin {
@@ -32,6 +37,85 @@ impl Plugin {
             registry.register(tool);
         }
     }
+}
+
+/// The on-disk schema for a plugin file.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginFile {
+    pub name: String,
+    #[serde(default)]
+    pub tools: Vec<PluginToolDef>,
+}
+
+/// A command-backed tool definition in a plugin file.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginToolDef {
+    pub name: String,
+    pub command: String,
+    pub description: String,
+}
+
+/// A tool that runs a shell command.
+struct CommandTool {
+    name: String,
+    command: String,
+    description: String,
+}
+
+impl Tool for CommandTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn run(
+        &self,
+        args: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> crate::error::Result<ToolResult> {
+        let args_json = serde_json::to_string(args)?;
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} {}", self.command, args_json))
+            .output()?;
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        if output.status.success() {
+            Ok(ToolResult::ok(text))
+        } else {
+            Ok(ToolResult::err(format!(
+                "command exited with {}\n{text}",
+                output.status
+            )))
+        }
+    }
+}
+
+/// Load all `*.json` plugin files from a directory and register their tools.
+pub fn load_plugins_from_dir(dir: &Path, registry: &mut Registry) -> crate::error::Result<usize> {
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        let plugin: PluginFile = serde_json::from_str(&raw)
+            .map_err(|e| crate::error::Error::Config(format!("parse {}: {e}", path.display())))?;
+        for tool in plugin.tools {
+            registry.register(Box::new(CommandTool {
+                name: tool.name,
+                command: tool.command,
+                description: tool.description,
+            }));
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 #[cfg(test)]

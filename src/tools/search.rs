@@ -10,6 +10,7 @@ use super::{string_arg, Tool, ToolContext, ToolResult};
 use crate::error::Result;
 
 /// A basic in-memory code index: token -> set of files containing it.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CodeIndex {
     index: HashMap<String, Vec<String>>,
 }
@@ -47,6 +48,22 @@ impl CodeIndex {
         files.sort();
         files.dedup();
         files
+    }
+
+    /// Persist the index to a file.
+    pub fn save(&self, path: &std::path::Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let raw = serde_json::to_string(self)?;
+        std::fs::write(path, raw)?;
+        Ok(())
+    }
+
+    /// Load an index from a file, or None if it does not exist.
+    pub fn load(path: &std::path::Path) -> Option<Self> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
     }
 }
 
@@ -88,7 +105,17 @@ impl Tool for SearchTool {
 
     fn run(&self, args: &Value, ctx: &ToolContext) -> Result<ToolResult> {
         let query = string_arg(args, "query")?;
-        let index = CodeIndex::build(&ctx.workspace_root);
+        // Use a persistent index cached under the workspace, rebuilt only when
+        // the cache is missing.
+        let cache = ctx.workspace_root.join(".forge").join("index.json");
+        let index = match CodeIndex::load(&cache) {
+            Some(index) => index,
+            None => {
+                let index = CodeIndex::build(&ctx.workspace_root);
+                let _ = index.save(&cache);
+                index
+            }
+        };
         let files = index.search(&query.to_lowercase());
         if files.is_empty() {
             return Ok(ToolResult::ok("no matches"));

@@ -25,6 +25,7 @@ pub mod posture;
 pub mod review;
 pub mod sandbox;
 pub mod session;
+pub mod telemetry;
 pub mod tools;
 pub mod tui;
 pub mod watchdog;

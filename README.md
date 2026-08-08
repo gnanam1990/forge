@@ -15,10 +15,11 @@ built to be simple, testable, and easy to extend.
   assistant stops or the turn budget is exhausted.
 - **Tool system** — a `Tool` trait, a shared `ToolContext`, and a `Registry`.
   Every tool enforces the workspace boundary.
-- **15 built-in tools** — `read_file`, `write_file`, `edit_file`,
-  `list_directory`, `bash`, `glob`, `grep`, `web_fetch`, `ask_user`,
-  `apply_patch`, `search` (code index), `terminal`, `git_status`, `git_diff`,
-  `git_commit`.
+- **15+ built-in tools** — `read_file`, `write_file`, `edit_file`,
+  `list_directory`, `bash`, `glob`, `grep`, `web_fetch`, `web_search`,
+  `ask_user`, `apply_patch` (built-in parser), `search` (persistent code index),
+  `terminal` (persistent sessions), `git_status`, `git_diff`, `git_commit`,
+  `ssh`, `remember`, `recall`.
 - **Orchestration** — parallel sub-agents, a DAG workflow engine with phases
   and budget-aware fan-out, and a stall watchdog with bounded retries.
 - **Sessions & resume** — persist conversations to disk and resume them across
@@ -37,7 +38,10 @@ built to be simple, testable, and easy to extend.
 - **Code/PR review** — heuristic diff review, plus a model-based reviewer with
   heuristic fallback.
 - **MCP** — a Model Context Protocol client over stdio, with MCP tools
-  registered into the agent's tool registry.
+  registered into the agent's tool registry, plus resources and prompts support.
+- **Plugins** — a plugin bundle system, plus loading command-backed plugins
+  from a directory of JSON files.
+- **Telemetry** — a minimal usage tracker that appends JSON events to a file.
 - **Memory** — a durable cross-session fact store, wired into the agent loop via
   `remember`/`recall` tools.
 - **Browser automation** — CDP headless Chrome with navigate, back, forward,
