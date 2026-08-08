@@ -133,6 +133,14 @@ impl Registry {
         registry.register(Box::new(ssh::SshTool::new()));
         registry
     }
+
+    /// Build the default registry plus the memory tools backed by a store.
+    pub fn with_memory(memory: std::sync::Arc<std::sync::Mutex<crate::memory::Memory>>) -> Self {
+        let mut registry = Self::builtin();
+        registry.register(Box::new(crate::memory::RememberTool::new(memory.clone())));
+        registry.register(Box::new(crate::memory::RecallTool::new(memory)));
+        registry
+    }
 }
 
 /// Resolve a user-supplied path against the workspace root, refusing any path

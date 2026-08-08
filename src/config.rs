@@ -61,6 +61,36 @@ impl Config {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     }
+
+    /// Validate the configuration. Returns an error naming the first problem.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(ws) = &self.workspace {
+            if !ws.is_dir() {
+                return Err(Error::Config(format!(
+                    "workspace {} is not a directory",
+                    ws.display()
+                )));
+            }
+        }
+        if let Some(base) = &self.provider.base_url {
+            if !base.starts_with("http://") && !base.starts_with("https://") {
+                return Err(Error::Config(format!(
+                    "provider.base_url must start with http:// or https://, got {base}"
+                )));
+            }
+        }
+        if let Some(model) = &self.provider.model {
+            if model.trim().is_empty() {
+                return Err(Error::Config("provider.model must not be empty".into()));
+            }
+        }
+        if let Some(turns) = self.max_turns {
+            if turns == 0 {
+                return Err(Error::Config("max_turns must be >= 1".into()));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Resolve the config file path: `$FORGE_CONFIG` if set, otherwise
@@ -113,5 +143,31 @@ mod tests {
         assert_eq!(cfg.workspace.as_deref(), Some(Path::new("/tmp/w")));
         assert_eq!(cfg.provider.model.as_deref(), Some("gpt-4o-mini"));
         assert_eq!(cfg.max_turns, Some(5));
+    }
+
+    #[test]
+    fn validate_rejects_bad_base_url() {
+        let cfg = Config {
+            provider: ProviderConfig {
+                base_url: Some("ftp://bad".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_turns() {
+        let cfg = Config {
+            max_turns: Some(0),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_default() {
+        assert!(Config::default().validate().is_ok());
     }
 }

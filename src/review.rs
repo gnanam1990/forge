@@ -77,6 +77,47 @@ pub fn review_diff(diff: &str) -> Review {
     review
 }
 
+/// Review a diff with a model, falling back to the heuristic reviewer if the
+/// model call fails. The model is asked to return findings as JSON.
+pub fn review_with_provider(diff: &str, provider: &dyn crate::agent::Provider) -> Review {
+    let prompt = format!(
+        "Review the following code diff and return a JSON array of findings. \
+         Each finding is an object with \"severity\" (one of info, warning, error) \
+         and \"message\". Return only the JSON array.\n\n{diff}"
+    );
+    let messages = vec![
+        crate::agent::Message::System("You are a code reviewer.".into()),
+        crate::agent::Message::User(prompt),
+    ];
+    match provider.complete(&messages) {
+        Ok(reply) => parse_findings(&reply.content).unwrap_or_else(|| review_diff(diff)),
+        Err(_) => review_diff(diff),
+    }
+}
+
+/// Parse a JSON array of findings from a model reply.
+fn parse_findings(text: &str) -> Option<Review> {
+    let start = text.find('[')?;
+    let end = text.rfind(']')?;
+    let slice = &text[start..=end];
+    let value: serde_json::Value = serde_json::from_str(slice).ok()?;
+    let array = value.as_array()?;
+    let mut review = Review::default();
+    for item in array {
+        let severity = match item.get("severity").and_then(serde_json::Value::as_str) {
+            Some("error") => Severity::Error,
+            Some("warning") => Severity::Warning,
+            _ => Severity::Info,
+        };
+        let message = item
+            .get("message")
+            .and_then(serde_json::Value::as_str)?
+            .to_string();
+        review.findings.push(Finding { severity, message });
+    }
+    Some(review)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +147,19 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.message.contains("no changes")));
+    }
+
+    #[test]
+    fn parses_model_findings() {
+        let text = r#"[{"severity":"error","message":"secret leaked"},{"severity":"warning","message":"todo left"}]"#;
+        let review = parse_findings(text).unwrap();
+        assert_eq!(review.findings.len(), 2);
+        assert_eq!(review.findings[0].severity, Severity::Error);
+        assert_eq!(review.findings[1].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn parse_findings_falls_back_on_bad_json() {
+        assert!(parse_findings("not json").is_none());
     }
 }

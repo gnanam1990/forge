@@ -13,6 +13,7 @@ pub mod cron;
 pub mod desktop;
 pub mod error;
 pub mod hooks;
+pub mod log;
 pub mod mcp;
 pub mod memory;
 pub mod notify;

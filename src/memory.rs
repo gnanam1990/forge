@@ -77,6 +77,67 @@ pub fn default_memory_path() -> Result<PathBuf> {
         .join("memory.json"))
 }
 
+use std::sync::{Arc, Mutex};
+
+use crate::tools::{Tool, ToolContext, ToolResult};
+
+/// A tool that remembers a fact in the shared memory store.
+pub struct RememberTool {
+    memory: Arc<Mutex<Memory>>,
+}
+
+impl RememberTool {
+    pub fn new(memory: Arc<Mutex<Memory>>) -> Self {
+        Self { memory }
+    }
+}
+
+impl Tool for RememberTool {
+    fn name(&self) -> &str {
+        "remember"
+    }
+
+    fn description(&self) -> &str {
+        "Remember a fact for future sessions. Args: {\"key\": string, \"value\": string}."
+    }
+
+    fn run(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
+        let key = crate::tools::string_arg(args, "key")?;
+        let value = crate::tools::string_arg(args, "value")?;
+        self.memory.lock().unwrap().remember(key, value);
+        Ok(ToolResult::ok("remembered"))
+    }
+}
+
+/// A tool that recalls a remembered fact.
+pub struct RecallTool {
+    memory: Arc<Mutex<Memory>>,
+}
+
+impl RecallTool {
+    pub fn new(memory: Arc<Mutex<Memory>>) -> Self {
+        Self { memory }
+    }
+}
+
+impl Tool for RecallTool {
+    fn name(&self) -> &str {
+        "recall"
+    }
+
+    fn description(&self) -> &str {
+        "Recall a remembered fact. Args: {\"key\": string}."
+    }
+
+    fn run(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
+        let key = crate::tools::string_arg(args, "key")?;
+        match self.memory.lock().unwrap().recall(&key) {
+            Some(value) => Ok(ToolResult::ok(value)),
+            None => Ok(ToolResult::err("not found")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

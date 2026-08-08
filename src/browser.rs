@@ -114,6 +114,34 @@ impl Browser {
         Ok(())
     }
 
+    /// Go back in the target's history.
+    pub fn back(&self, target: &Target) -> Result<()> {
+        self.send_command(target, "Page.goBack", json!({}))?;
+        Ok(())
+    }
+
+    /// Go forward in the target's history.
+    pub fn forward(&self, target: &Target) -> Result<()> {
+        self.send_command(target, "Page.goForward", json!({}))?;
+        Ok(())
+    }
+
+    /// Reload the target.
+    pub fn reload(&self, target: &Target) -> Result<()> {
+        self.send_command(target, "Page.reload", json!({}))?;
+        Ok(())
+    }
+
+    /// Get the visible text of the target's page.
+    pub fn get_text(&self, target: &Target) -> Result<String> {
+        self.evaluate(target, "document.body ? document.body.innerText : ''")
+    }
+
+    /// Get the title of the target's page.
+    pub fn get_title(&self, target: &Target) -> Result<String> {
+        self.evaluate(target, "document.title")
+    }
+
     /// Click at a coordinate in the target.
     pub fn click(&self, target: &Target, x: i32, y: i32) -> Result<()> {
         self.send_command(

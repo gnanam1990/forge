@@ -123,6 +123,49 @@ impl Drop for McpClient {
     }
 }
 
+use std::sync::{Arc, Mutex};
+
+use crate::tools::{Registry, Tool, ToolContext, ToolResult};
+
+/// A tool backed by an MCP server tool. All tools from one server share a
+/// single client behind a mutex.
+pub struct McpTool {
+    name: String,
+    description: String,
+    client: Arc<Mutex<McpClient>>,
+}
+
+impl Tool for McpTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn run(&self, args: &Value, _ctx: &ToolContext) -> Result<ToolResult> {
+        let mut client = self.client.lock().unwrap();
+        let output = client.call_tool(&self.name, args.clone())?;
+        Ok(ToolResult::ok(output))
+    }
+}
+
+/// Connect to an MCP server and register all of its tools into a registry.
+pub fn register_mcp_server(registry: &mut Registry, command: &str, args: &[&str]) -> Result<()> {
+    let mut client = McpClient::connect(command, args)?;
+    let tools = client.list_tools()?;
+    let shared = Arc::new(Mutex::new(client));
+    for tool_name in tools {
+        registry.register(Box::new(McpTool {
+            name: tool_name.clone(),
+            description: format!("MCP tool {tool_name} from {command}"),
+            client: Arc::clone(&shared),
+        }));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
