@@ -21,6 +21,33 @@ pub struct Config {
     pub provider: ProviderConfig,
     /// Maximum number of agent turns before the loop stops.
     pub max_turns: Option<usize>,
+    /// MCP servers to auto-register at startup.
+    pub mcp_servers: Vec<McpServerConfig>,
+    /// Directory of JSON plugin files to load at startup.
+    pub plugins_dir: Option<PathBuf>,
+    /// Hooks to install at startup.
+    pub hooks: Vec<HookConfig>,
+    /// Whether to record telemetry events.
+    pub telemetry: bool,
+}
+
+/// An MCP server to connect to at startup.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// A hook to install at startup.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HookConfig {
+    pub name: String,
+    /// The shell command to run before a tool call.
+    pub before: Option<String>,
+    /// The shell command to run after a tool call.
+    pub after: Option<String>,
 }
 
 /// Model provider settings.

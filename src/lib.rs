@@ -29,6 +29,7 @@ pub mod telemetry;
 pub mod tools;
 pub mod tui;
 pub mod watchdog;
+pub mod wiring;
 pub mod workflow;
 
 pub use error::{Error, Result};

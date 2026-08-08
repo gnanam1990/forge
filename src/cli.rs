@@ -141,8 +141,21 @@ pub fn run(cli: Cli) -> i32 {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e}");
-            1
+            exit_code(&e)
         }
+    }
+}
+
+/// Map an error to a distinct exit code.
+fn exit_code(e: &crate::error::Error) -> i32 {
+    use crate::error::Error;
+    match e {
+        Error::Config(_) => 2,
+        Error::Provider(_) => 3,
+        Error::Tool(_) => 4,
+        Error::InvalidArgs(_) => 5,
+        Error::Agent(_) => 6,
+        _ => 1,
     }
 }
 
@@ -475,16 +488,30 @@ fn dispatch(cli: Cli) -> Result<()> {
             let config = Config::load()?;
             let turns = config.max_turns.unwrap_or(10);
             let provider = HttpProvider::new(&config.provider)?;
+            let wiring = crate::wiring::build_wiring(&config)?;
             let raw = std::fs::read_to_string(&file)?;
             let plan: crate::plan::Plan = serde_json::from_str(&raw).map_err(|e| {
                 crate::error::Error::InvalidArgs(format!("parse {}: {e}", file.display()))
             })?;
-            let agent = Agent::new(Box::new(provider), Registry::builtin(), turns);
+            let agent =
+                Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
             let runner =
                 crate::plan_exec::PlanRunner::new(agent).with_progress(Box::new(|id, status| {
                     eprintln!("[plan] {id}: {status}");
                 }));
             let outcome = runner.run(&plan)?;
+            wiring.telemetry.record(
+                "plan",
+                serde_json::json!({
+                    "name": plan.name,
+                    "status": format!("{:?}", outcome.status),
+                    "tasks": outcome.tasks_run,
+                }),
+            )?;
+            crate::notify::Notifier::new(true).notify(
+                "forge",
+                &format!("plan {} finished: {:?}", plan.name, outcome.status),
+            )?;
             println!("status: {:?}", outcome.status);
             for (id, text) in &outcome.results {
                 println!("=== {id} ===\n{text}");
@@ -525,8 +552,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             let turns = max_turns.or(config.max_turns).unwrap_or(10);
             let provider = HttpProvider::new(&config.provider)?;
-            let registry = Registry::builtin();
-            let agent = Agent::new(Box::new(provider), registry, turns);
+            let wiring = crate::wiring::build_wiring(&config)?;
+            let agent =
+                Agent::new(Box::new(provider), wiring.registry, turns).with_hooks(wiring.hooks);
             let dir = crate::session::default_sessions_dir()?;
             let id = format!(
                 "sess-{}",
@@ -538,6 +566,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             let mut session = crate::session::Session::new(&id);
             let outcome = agent.run_into(&mut session.messages, &prompt)?;
             session.save(&dir)?;
+            wiring.telemetry.record(
+                "run",
+                serde_json::json!({
+                    "turns": outcome.turns,
+                    "tool_calls": outcome.tool_calls,
+                }),
+            )?;
             println!("{}", outcome.final_text);
             eprintln!(
                 "[forge] {} turn(s), {} tool call(s), session {id}",

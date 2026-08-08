@@ -142,6 +142,33 @@ impl Browser {
         self.evaluate(target, "document.title")
     }
 
+    /// Get the current URL of the target's page.
+    pub fn get_url(&self, target: &Target) -> Result<String> {
+        self.evaluate(target, "location.href")
+    }
+
+    /// Get the full HTML of the target's page.
+    pub fn get_html(&self, target: &Target) -> Result<String> {
+        self.evaluate(target, "document.documentElement.outerHTML")
+    }
+
+    /// Wait until the page finishes loading, up to a timeout.
+    pub fn wait_for_load(&self, target: &Target, timeout_secs: u64) -> Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        loop {
+            let state = self
+                .evaluate(target, "document.readyState")
+                .unwrap_or_default();
+            if state.trim_matches('"') == "complete" {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Agent("page did not finish loading in time".into()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
     /// Click at a coordinate in the target.
     pub fn click(&self, target: &Target, x: i32, y: i32) -> Result<()> {
         self.send_command(

@@ -52,6 +52,10 @@ built to be simple, testable, and easy to extend.
 - **Sandbox** — command isolation with configurable network/file restrictions.
 - **Logging** — a small structured logger.
 - **Config validation** — validates workspace, provider, and turn settings.
+- **Config-driven wiring** — auto-loads MCP servers, plugins, hooks, and
+  telemetry from config at startup.
+- **Telemetry** — a minimal usage tracker recording run/plan events.
+- **Distinct exit codes** — config=2, provider=3, tool=4, args=5, agent=6.
 - **Model-based summarization** — context compaction asks the provider to
   summarize, with a heuristic fallback.
 - **`forge setup`** — writes a working config plus sample workflow and cron

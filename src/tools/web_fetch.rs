@@ -47,7 +47,8 @@ impl Tool for WebFetchTool {
             Err(e) => return Ok(ToolResult::err(format!("read failed: {e}"))),
         };
         let truncated = bytes.len() > MAX_BYTES;
-        let text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_BYTES)]).into_owned();
+        let raw = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_BYTES)]).into_owned();
+        let text = html_to_text(&raw);
         let mut output = text;
         if truncated {
             output.push_str(&format!(
@@ -57,4 +58,58 @@ impl Tool for WebFetchTool {
         }
         Ok(ToolResult::ok(output))
     }
+}
+
+/// A light HTML-to-text conversion: strips tags and decodes common entities.
+fn html_to_text(html: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    let mut skip_depth = 0usize;
+    let mut chars = html.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => {
+                let rest: String = chars.clone().take(7).collect();
+                if rest.starts_with("script") || rest.starts_with("style") {
+                    skip_depth += 1;
+                } else if rest.starts_with("/script") || rest.starts_with("/style") {
+                    skip_depth = skip_depth.saturating_sub(1);
+                }
+                in_tag = true;
+            }
+            '>' => in_tag = false,
+            _ if in_tag || skip_depth > 0 => {}
+            '&' => {
+                let entity: String = chars.clone().take(6).collect();
+                let decoded = match entity.as_str() {
+                    "amp;" => "&",
+                    "lt;" => "<",
+                    "gt;" => ">",
+                    "quot;" => "\"",
+                    "nbsp;" => " ",
+                    _ => "&",
+                };
+                out.push_str(decoded);
+                for _ in 0..decoded.len().saturating_sub(1) {
+                    chars.next();
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    // Collapse runs of whitespace.
+    let mut collapsed = String::new();
+    let mut last_space = false;
+    for c in out.chars() {
+        if c.is_whitespace() {
+            if !last_space {
+                collapsed.push(' ');
+                last_space = true;
+            }
+        } else {
+            collapsed.push(c);
+            last_space = false;
+        }
+    }
+    collapsed.trim().to_string()
 }
