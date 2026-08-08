@@ -412,6 +412,8 @@ pub enum ConfigAction {
     },
     /// Show the resolved build/test/lint/format/check commands for the workspace.
     Commands,
+    /// List all effective config keys and values.
+    List,
 }
 
 /// Subcommands for `forge telemetry`.
@@ -521,6 +523,25 @@ pub enum StashAction {
     Pop,
 }
 
+/// Subcommands for `forge git tag`.
+#[derive(Subcommand)]
+pub enum TagAction {
+    /// List tags.
+    List,
+    /// Create an annotated tag.
+    Create {
+        /// The tag name.
+        name: String,
+        /// The tag message.
+        message: Option<String>,
+    },
+    /// Delete a tag.
+    Delete {
+        /// The tag name.
+        name: String,
+    },
+}
+
 /// Subcommands for `forge git remote`.
 #[derive(Subcommand)]
 pub enum RemoteAction {
@@ -590,12 +611,10 @@ pub enum GitAction {
         /// The file path.
         file: String,
     },
-    /// Create an annotated tag: `git tag <name> [message]`.
+    /// Manage tags: `tag` (help), `tag list`, `tag create <name> [msg]`, `tag delete <name>`.
     Tag {
-        /// The tag name.
-        name: String,
-        /// The tag message.
-        message: Option<String>,
+        #[command(subcommand)]
+        action: TagAction,
     },
     /// Manage remotes: `remote` (show), `remote add <name> <url>`, `remote remove <name>`.
     Remote {
@@ -1933,6 +1952,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Path) => "path",
                 Some(ConfigAction::Unset { .. }) => "unset",
                 Some(ConfigAction::Commands) => "commands",
+                Some(ConfigAction::List) => "list",
             };
             wiring
                 .telemetry
@@ -2115,6 +2135,38 @@ fn dispatch(cli: Cli) -> Result<()> {
                     for step in ["build", "test", "lint", "format", "check"] {
                         println!("{step}: {}", config.commands.resolve(step, &ws));
                     }
+                }
+                Some(ConfigAction::List) => {
+                    println!("workspace: {}", config.workspace_root().display());
+                    println!(
+                        "model: {}",
+                        config.provider.model.as_deref().unwrap_or("(none)")
+                    );
+                    println!(
+                        "base_url: {}",
+                        config.provider.base_url.as_deref().unwrap_or("(default)")
+                    );
+                    println!(
+                        "api_key: {}",
+                        if config.provider.api_key.is_some() {
+                            "set"
+                        } else {
+                            "unset"
+                        }
+                    );
+                    println!("max_turns: {:?}", config.max_turns);
+                    println!(
+                        "plugins_dir: {}",
+                        config
+                            .plugins_dir
+                            .as_deref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(default)".into())
+                    );
+                    println!("telemetry: {}", config.telemetry);
+                    println!("aliases: {}", config.aliases.len());
+                    println!("mcp_servers: {}", config.mcp_servers.len());
+                    println!("saved_providers: {}", config.saved_providers.len());
                 }
             }
             Ok(())
@@ -3077,20 +3129,46 @@ fn dispatch(cli: Cli) -> Result<()> {
                         println!("{text}");
                     }
                 }
-                GitAction::Tag { name, message } => {
-                    let mut cmd = std::process::Command::new("git");
-                    cmd.args(["tag", "-a", &name]).current_dir(&ws);
-                    if let Some(msg) = &message {
-                        cmd.args(["-m", msg]);
+                GitAction::Tag { action } => match action {
+                    TagAction::List => {
+                        let out = std::process::Command::new("git")
+                            .args(["tag", "-l"])
+                            .current_dir(&ws)
+                            .output()?;
+                        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                        if text.trim().is_empty() {
+                            println!("no tags");
+                        } else {
+                            println!("{text}");
+                        }
                     }
-                    let status = cmd.status()?;
-                    if !status.success() {
-                        return Err(crate::error::Error::Tool(format!(
-                            "git tag {name} failed with {status}"
-                        )));
+                    TagAction::Create { name, message } => {
+                        let mut cmd = std::process::Command::new("git");
+                        cmd.args(["tag", "-a", &name]).current_dir(&ws);
+                        if let Some(msg) = &message {
+                            cmd.args(["-m", msg]);
+                        }
+                        let status = cmd.status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git tag {name} failed with {status}"
+                            )));
+                        }
+                        println!("created tag {name}");
                     }
-                    println!("created tag {name}");
-                }
+                    TagAction::Delete { name } => {
+                        let status = std::process::Command::new("git")
+                            .args(["tag", "-d", &name])
+                            .current_dir(&ws)
+                            .status()?;
+                        if !status.success() {
+                            return Err(crate::error::Error::Tool(format!(
+                                "git tag -d {name} failed with {status}"
+                            )));
+                        }
+                        println!("deleted tag {name}");
+                    }
+                },
                 GitAction::Add { files } => {
                     if files.is_empty() {
                         return Err(crate::error::Error::InvalidArgs(

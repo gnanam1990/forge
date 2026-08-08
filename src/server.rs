@@ -213,6 +213,64 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
                 ))
             }
         }
+        ("GET", "/stats") => {
+            let path = crate::telemetry::default_telemetry_path()?;
+            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut counts: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            let mut total = 0usize;
+            for line in raw.lines() {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(event) = value.get("event").and_then(|e| e.as_str()) {
+                        *counts.entry(event.to_string()).or_insert(0) += 1;
+                        total += 1;
+                    }
+                }
+            }
+            Ok((
+                200,
+                "application/json",
+                json!({ "total": total, "events": counts }).to_string(),
+            ))
+        }
+        ("GET", _) => {
+            // `GET /session/<id>`
+            if req.path.starts_with("/session/") {
+                let id = req.path.trim_start_matches("/session/");
+                if id.is_empty() {
+                    return Ok((
+                        404,
+                        "application/json",
+                        json!({ "error": "missing session id" }).to_string(),
+                    ));
+                }
+                let dir = crate::session::default_sessions_dir()?;
+                match crate::session::Session::load(&dir, id) {
+                    Ok(session) => Ok((
+                        200,
+                        "application/json",
+                        json!({
+                            "id": session.id,
+                            "messages": session.message_count(),
+                            "tokens": session.token_usage(),
+                            "created_at": session.created_at,
+                        })
+                        .to_string(),
+                    )),
+                    Err(_) => Ok((
+                        404,
+                        "application/json",
+                        json!({ "error": format!("no session {id}") }).to_string(),
+                    )),
+                }
+            } else {
+                Ok((
+                    404,
+                    "application/json",
+                    json!({ "error": "not found" }).to_string(),
+                ))
+            }
+        }
         _ => Ok((
             404,
             "application/json",
@@ -381,6 +439,58 @@ mod tests {
         let req = Request {
             method: "DELETE".into(),
             path: "/memory/does_not_exist".into(),
+            body: String::new(),
+        };
+        let (status, _, _) = route(&req).unwrap();
+        assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn routes_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FORGE_TELEMETRY", dir.path().join("t.jsonl"));
+        std::fs::write(
+            dir.path().join("t.jsonl"),
+            "{\"event\":\"run\",\"data\":{}}\n{\"event\":\"run\",\"data\":{}}\n",
+        )
+        .unwrap();
+        let req = Request {
+            method: "GET".into(),
+            path: "/stats".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 2);
+        assert_eq!(v["events"]["run"], 2);
+        std::env::remove_var("FORGE_TELEMETRY");
+    }
+
+    #[test]
+    fn routes_session_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("sessions");
+        let session = crate::session::Session::new("sess-1");
+        session.save(&session_dir).unwrap();
+        std::env::set_var("FORGE_SESSIONS_DIR", session_dir.display().to_string());
+        let req = Request {
+            method: "GET".into(),
+            path: "/session/sess-1".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["id"], "sess-1");
+        std::env::remove_var("FORGE_SESSIONS_DIR");
+    }
+
+    #[test]
+    fn session_missing_is_404() {
+        let req = Request {
+            method: "GET".into(),
+            path: "/session/does_not_exist".into(),
             body: String::new(),
         };
         let (status, _, _) = route(&req).unwrap();

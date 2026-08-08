@@ -89,6 +89,11 @@ impl Session {
 
 /// The default sessions directory: `~/.local/share/forge/sessions`.
 pub fn default_sessions_dir() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("FORGE_SESSIONS_DIR") {
+        if !p.trim().is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
     let home = std::env::var("HOME").map_err(|_| Error::Config("HOME is not set".into()))?;
     Ok(PathBuf::from(home)
         .join(".local")
