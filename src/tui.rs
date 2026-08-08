@@ -32,6 +32,7 @@ struct App {
     history: Vec<String>,
     history_index: Option<usize>,
     model: String,
+    tools: Vec<String>,
 }
 
 impl App {
@@ -41,6 +42,7 @@ impl App {
         sessions_dir: std::path::PathBuf,
         telemetry: crate::telemetry::Telemetry,
         model: String,
+        tools: Vec<String>,
     ) -> Self {
         Self {
             messages: Vec::new(),
@@ -54,6 +56,7 @@ impl App {
             history: Vec::new(),
             history_index: None,
             model,
+            tools,
         }
     }
 
@@ -71,11 +74,31 @@ impl App {
             self.messages.push(format!("> {prompt}"));
             match prompt.as_str() {
                 "/help" => {
-                    self.messages
-                        .push("commands: /help, /model, /sessions, /clear, /exit".into());
+                    self.messages.push(
+                        "commands: /help, /model, /tools, /memory, /sessions, /clear, /exit".into(),
+                    );
                 }
                 "/model" => {
                     self.messages.push(format!("active model: {}", self.model));
+                }
+                "/tools" => {
+                    if self.tools.is_empty() {
+                        self.messages.push("no tools".into());
+                    } else {
+                        self.messages.push(self.tools.join(", "));
+                    }
+                }
+                "/memory" => {
+                    let path = crate::memory::default_memory_path().unwrap_or_default();
+                    let memory = crate::memory::Memory::load(path).unwrap_or_default();
+                    let facts = memory.all();
+                    if facts.is_empty() {
+                        self.messages.push("(no memory facts)".into());
+                    } else {
+                        for (k, v) in facts {
+                            self.messages.push(format!("{k}: {v}"));
+                        }
+                    }
                 }
                 "/sessions" => {
                     let ids = Session::list(&self.sessions_dir).unwrap_or_default();
@@ -144,6 +167,7 @@ pub fn run_chat(config: &Config, resume: Option<&str>) -> Result<()> {
         Session::new(&id)
     };
     let wiring = crate::wiring::build_wiring(config)?;
+    let tool_names = wiring.registry.names();
     let agent = Agent::new(Box::new(provider), wiring.registry, turns)
         .with_approver(Box::new(|tool| {
             print!("allow {tool}? [y/N] ");
@@ -163,6 +187,7 @@ pub fn run_chat(config: &Config, resume: Option<&str>) -> Result<()> {
             .model
             .clone()
             .unwrap_or_else(|| "(none)".into()),
+        tool_names,
     );
 
     enable_raw_mode()?;

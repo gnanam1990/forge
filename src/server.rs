@@ -105,6 +105,35 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
             "application/json",
             json!({ "version": env!("CARGO_PKG_VERSION") }).to_string(),
         )),
+        ("GET", "/models") => Ok((
+            200,
+            "application/json",
+            json!({ "models": crate::models::MODELS }).to_string(),
+        )),
+        ("POST", "/session/delete") => {
+            let body: serde_json::Value = serde_json::from_str(&req.body)
+                .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
+            let id = body
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::InvalidArgs("body must be {\"id\": string}".into()))?;
+            let dir = crate::session::default_sessions_dir()?;
+            let path = dir.join(format!("{id}.json"));
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+                Ok((
+                    200,
+                    "application/json",
+                    json!({ "ok": true, "id": id }).to_string(),
+                ))
+            } else {
+                Ok((
+                    404,
+                    "application/json",
+                    json!({ "error": format!("no session {id}") }).to_string(),
+                ))
+            }
+        }
         ("POST", "/tools/call") => {
             let body: serde_json::Value = serde_json::from_str(&req.body)
                 .map_err(|e| Error::InvalidArgs(format!("bad JSON body: {e}")))?;
@@ -323,8 +352,40 @@ fn route(req: &Request) -> Result<(u16, &'static str, String)> {
             }
         }
         ("GET", _) => {
-            // `GET /session/<id>`
-            if req.path.starts_with("/session/") {
+            // `GET /context/<id>`
+            if req.path.starts_with("/context/") {
+                let id = req.path.trim_start_matches("/context/");
+                if id.is_empty() {
+                    return Ok((
+                        404,
+                        "application/json",
+                        json!({ "error": "missing session id" }).to_string(),
+                    ));
+                }
+                let dir = crate::session::default_sessions_dir()?;
+                match crate::session::Session::load(&dir, id) {
+                    Ok(session) => {
+                        let tokens = session.token_usage();
+                        let max = config.max_turns.unwrap_or(10);
+                        Ok((
+                            200,
+                            "application/json",
+                            json!({
+                                "id": session.id,
+                                "messages": session.message_count(),
+                                "tokens": tokens,
+                                "max_turns": max,
+                            })
+                            .to_string(),
+                        ))
+                    }
+                    Err(_) => Ok((
+                        404,
+                        "application/json",
+                        json!({ "error": format!("no session {id}") }).to_string(),
+                    )),
+                }
+            } else if req.path.starts_with("/session/") {
                 let id = req.path.trim_start_matches("/session/");
                 if id.is_empty() {
                     return Ok((
@@ -711,5 +772,57 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(v["memory"].as_object().unwrap().is_empty());
         std::env::remove_var("FORGE_MEMORY");
+    }
+
+    #[test]
+    fn routes_models() {
+        let req = Request {
+            method: "GET".into(),
+            path: "/models".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(!v["models"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_delete_roundtrip() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("sessions");
+        let session = crate::session::Session::new("sess-del");
+        session.save(&session_dir).unwrap();
+        std::env::set_var("FORGE_SESSIONS_DIR", session_dir.display().to_string());
+        let req = Request {
+            method: "POST".into(),
+            path: "/session/delete".into(),
+            body: r#"{"id":"sess-del"}"#.into(),
+        };
+        let (status, _, _) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        assert!(!session_dir.join("sess-del.json").exists());
+        std::env::remove_var("FORGE_SESSIONS_DIR");
+    }
+
+    #[test]
+    fn routes_context_by_id() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("sessions");
+        let session = crate::session::Session::new("sess-ctx");
+        session.save(&session_dir).unwrap();
+        std::env::set_var("FORGE_SESSIONS_DIR", session_dir.display().to_string());
+        let req = Request {
+            method: "GET".into(),
+            path: "/context/sess-ctx".into(),
+            body: String::new(),
+        };
+        let (status, _, body) = route(&req).unwrap();
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["id"], "sess-ctx");
+        std::env::remove_var("FORGE_SESSIONS_DIR");
     }
 }

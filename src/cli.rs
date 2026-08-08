@@ -12,7 +12,7 @@ use crate::tools::Registry;
 
 /// forge — an original, self-contained coding agent written in Rust.
 #[derive(Parser)]
-#[command(name = "forge", version, about)]
+#[command(name = "forge", version, about, disable_help_subcommand = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -431,6 +431,11 @@ pub enum ConfigAction {
     Commands,
     /// List all effective config keys and values.
     List,
+    /// Export the config to a JSON file.
+    Export {
+        /// The output file path.
+        path: PathBuf,
+    },
 }
 
 /// Subcommands for `forge telemetry`.
@@ -1403,6 +1408,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                     println!("total chars: {total_chars}");
                     println!("file: {}", path.display());
                 }
+                "count" => {
+                    println!("{}", memory.all().len());
+                }
                 "remove" => {
                     let key =
                         key.ok_or_else(|| crate::error::Error::InvalidArgs("key required".into()))?;
@@ -2030,6 +2038,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Some(ConfigAction::Unset { .. }) => "unset",
                 Some(ConfigAction::Commands) => "commands",
                 Some(ConfigAction::List) => "list",
+                Some(ConfigAction::Export { .. }) => "export",
             };
             wiring
                 .telemetry
@@ -2247,6 +2256,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                     println!("aliases: {}", config.aliases.len());
                     println!("mcp_servers: {}", config.mcp_servers.len());
                     println!("saved_providers: {}", config.saved_providers.len());
+                }
+                Some(ConfigAction::Export { path }) => {
+                    let raw = serde_json::to_string_pretty(&config)?;
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, raw)?;
+                    println!("exported config to {}", path.display());
                 }
             }
             Ok(())
